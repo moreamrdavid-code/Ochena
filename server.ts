@@ -42,6 +42,9 @@ async function startServer() {
         socket.emit("matched", { roomId, partnerId });
         
         io.sockets.sockets.get(partnerId)?.join(roomId);
+        
+        // Notify admin of new match
+        io.to("admin_room").emit("chatUpdate", activeChats[roomId]);
       } else {
         matchingQueue.push(socket.id);
         socket.emit("waiting");

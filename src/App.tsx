@@ -29,8 +29,13 @@ export default function App() {
   const [adminCode, setAdminCode] = useState('');
   const [adminChats, setAdminChats] = useState<{ [key: string]: ChatSession }>({});
   const [selectedAdminChat, setSelectedAdminChat] = useState<string | null>(null);
+  const selectedAdminChatRef = useRef<string | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    selectedAdminChatRef.current = selectedAdminChat;
+  }, [selectedAdminChat]);
 
   useEffect(() => {
     const newSocket = io();
@@ -56,6 +61,7 @@ export default function App() {
     });
 
     newSocket.on('adminAuthSuccess', (chats: { [key: string]: ChatSession }) => {
+      console.log('Admin Auth Success, chats:', chats);
       setAdminChats(chats);
       setView('admin_panel');
     });
@@ -64,7 +70,8 @@ export default function App() {
       alert('ভুল অ্যাডমিন কোড।');
     });
 
-    newSocket.on('chatUpdate', (chat: ChatSession & { roomId: string }) => {
+    newSocket.on('chatUpdate', (chat: ChatSession) => {
+      console.log('Chat Update received:', chat);
       setAdminChats((prev) => ({ ...prev, [chat.roomId]: chat }));
     });
 
@@ -74,7 +81,9 @@ export default function App() {
         delete next[id];
         return next;
       });
-      if (selectedAdminChat === id) setSelectedAdminChat(null);
+      if (selectedAdminChatRef.current === id) {
+        setSelectedAdminChat(null);
+      }
     });
 
     return () => {
