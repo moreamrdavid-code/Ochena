@@ -27,7 +27,8 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [adminCode, setAdminCode] = useState('');
-  const [adminChats, setAdminChats] = useState<{ [key: string]: ChatSession }>({});
+  const [adminData, setAdminData] = useState<{ active: { [key: string]: ChatSession }, history: ChatSession[] }>({ active: {}, history: [] });
+  const [adminTab, setAdminTab] = useState<'active' | 'history'>('active');
   const [selectedAdminChat, setSelectedAdminChat] = useState<string | null>(null);
   const selectedAdminChatRef = useRef<string | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -60,9 +61,8 @@ export default function App() {
       setRoomId(null);
     });
 
-    newSocket.on('adminAuthSuccess', (chats: { [key: string]: ChatSession }) => {
-      console.log('Admin Auth Success, chats:', chats);
-      setAdminChats(chats);
+    newSocket.on('adminAuthSuccess', (data: { active: { [key: string]: ChatSession }, history: ChatSession[] }) => {
+      setAdminData(data);
       setView('admin_panel');
     });
 
@@ -70,20 +70,8 @@ export default function App() {
       alert('ভুল অ্যাডমিন কোড।');
     });
 
-    newSocket.on('chatUpdate', (chat: ChatSession) => {
-      console.log('Chat Update received:', chat);
-      setAdminChats((prev) => ({ ...prev, [chat.roomId]: chat }));
-    });
-
-    newSocket.on('chatEnded', (id: string) => {
-      setAdminChats((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
-      if (selectedAdminChatRef.current === id) {
-        setSelectedAdminChat(null);
-      }
+    newSocket.on('chatUpdate', (data: { active: { [key: string]: ChatSession }, history: ChatSession[] }) => {
+      setAdminData(data);
     });
 
     return () => {
@@ -389,63 +377,118 @@ export default function App() {
                   <button onClick={() => setView('home')} className="text-[10px] uppercase tracking-widest opacity-50 hover:opacity-100">বের হন</button>
                 </div>
               </header>
+              <div className="flex border-b border-white/5">
+                <button 
+                  onClick={() => setAdminTab('active')}
+                  className={`flex-1 py-4 text-[10px] uppercase tracking-widest font-bold transition-all ${adminTab === 'active' ? 'text-primary border-b-2 border-primary' : 'opacity-30'}`}
+                >
+                  সক্রিয় ({Object.keys(adminData.active).length})
+                </button>
+                <button 
+                  onClick={() => setAdminTab('history')}
+                  className={`flex-1 py-4 text-[10px] uppercase tracking-widest font-bold transition-all ${adminTab === 'history' ? 'text-primary border-b-2 border-primary' : 'opacity-30'}`}
+                >
+                  ইতিহাস ({adminData.history.length})
+                </button>
+              </div>
+
               <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                {Object.values(adminChats).length === 0 ? (
-                  <div className="p-12 text-center opacity-20">
-                    <p className="text-[10px] uppercase tracking-widest">কোনো সক্রিয় সেশন নেই</p>
-                  </div>
-                ) : (
-                  (Object.values(adminChats) as ChatSession[]).map((chat: ChatSession) => (
-                    <button
-                      key={chat.roomId}
-                      onClick={() => setSelectedAdminChat(chat.roomId)}
-                      className={`w-full p-5 text-left rounded-2xl transition-all ${
-                        selectedAdminChat === chat.roomId ? 'glass bg-primary/10' : 'hover:bg-white/5'
-                      }`}
-                    >
-                      <p className="text-[10px] font-mono mb-2 opacity-50">{chat.roomId}</p>
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] uppercase tracking-widest font-bold text-muted">
-                          {chat.messages.length} মেসেজ
-                        </span>
-                        <div className="flex -space-x-2">
-                          <div className="w-4 h-4 rounded-full bg-primary/20 border border-white/10" />
-                          <div className="w-4 h-4 rounded-full bg-secondary/20 border border-white/10" />
+                {adminTab === 'active' ? (
+                  Object.values(adminData.active).length === 0 ? (
+                    <div className="p-12 text-center opacity-20">
+                      <p className="text-[10px] uppercase tracking-widest">কোনো সক্রিয় সেশন নেই</p>
+                    </div>
+                  ) : (
+                    Object.values(adminData.active).map((chat) => (
+                      <button
+                        key={chat.roomId}
+                        onClick={() => setSelectedAdminChat(chat.roomId)}
+                        className={`w-full p-5 text-left rounded-2xl transition-all ${
+                          selectedAdminChat === chat.roomId ? 'glass bg-primary/10' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <p className="text-[10px] font-mono mb-2 opacity-50">{chat.roomId}</p>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] uppercase tracking-widest font-bold text-muted">
+                            {chat.messages.length} মেসেজ
+                          </span>
+                          <div className="flex -space-x-2">
+                            <div className="w-4 h-4 rounded-full bg-primary/20 border border-white/10" />
+                            <div className="w-4 h-4 rounded-full bg-secondary/20 border border-white/10" />
+                          </div>
                         </div>
-                      </div>
-                    </button>
-                  ))
+                      </button>
+                    ))
+                  )
+                ) : (
+                  adminData.history.length === 0 ? (
+                    <div className="p-12 text-center opacity-20">
+                      <p className="text-[10px] uppercase tracking-widest">কোনো ইতিহাস নেই</p>
+                    </div>
+                  ) : (
+                    adminData.history.map((chat, idx) => (
+                      <button
+                        key={chat.roomId + idx}
+                        onClick={() => setSelectedAdminChat(chat.roomId + '_hist_' + idx)}
+                        className={`w-full p-5 text-left rounded-2xl transition-all ${
+                          selectedAdminChat === chat.roomId + '_hist_' + idx ? 'glass bg-primary/10' : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <p className="text-[10px] font-mono mb-2 opacity-50">{chat.roomId}</p>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] uppercase tracking-widest font-bold text-muted">
+                            {chat.messages.length} মেসেজ (শেষ)
+                          </span>
+                        </div>
+                      </button>
+                    ))
+                  )
                 )}
               </div>
             </aside>
 
             <main className="flex-1 flex flex-col relative">
-              {selectedAdminChat && adminChats[selectedAdminChat] ? (
-                <>
-                  <header className="p-8 glass border-b border-white/5">
-                    <h3 className="font-serif italic text-xl opacity-50">পর্যবেক্ষণ করা হচ্ছে: {selectedAdminChat}</h3>
-                  </header>
-                  <div className="flex-1 overflow-y-auto p-8 space-y-8">
-                    {adminChats[selectedAdminChat].messages.map((msg) => (
-                      <div key={msg.id} className="space-y-2">
-                        <div className="flex items-center gap-3">
-                          <span className="text-[9px] font-mono px-2 py-1 glass rounded text-muted">USER_{msg.sender.slice(0, 4)}</span>
-                          <span className="text-[8px] font-mono opacity-20">{new Date(msg.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                        <div className="glass p-5 rounded-2xl max-w-2xl">
-                          <p className="text-sm leading-relaxed">{msg.text}</p>
-                        </div>
+              {(() => {
+                let chat: ChatSession | undefined;
+                if (selectedAdminChat?.includes('_hist_')) {
+                  const idx = parseInt(selectedAdminChat.split('_hist_')[1]);
+                  chat = adminData.history[idx];
+                } else if (selectedAdminChat) {
+                  chat = adminData.active[selectedAdminChat];
+                }
+
+                if (chat) {
+                  return (
+                    <>
+                      <header className="p-8 glass border-b border-white/5">
+                        <h3 className="font-serif italic text-xl opacity-50">
+                          {selectedAdminChat?.includes('_hist_') ? 'ইতিহাস: ' : 'পর্যবেক্ষণ: '} {chat.roomId}
+                        </h3>
+                      </header>
+                      <div className="flex-1 overflow-y-auto p-8 space-y-8">
+                        {chat.messages.map((msg) => (
+                          <div key={msg.id} className="space-y-2">
+                            <div className="flex items-center gap-3">
+                              <span className="text-[9px] font-mono px-2 py-1 glass rounded text-muted">USER_{msg.sender.slice(0, 4)}</span>
+                              <span className="text-[8px] font-mono opacity-20">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                            <div className="glass p-5 rounded-2xl max-w-2xl">
+                              <p className="text-sm leading-relaxed">{msg.text}</p>
+                            </div>
+                          </div>
+                        ))}
+                        <div ref={messagesEndRef} />
                       </div>
-                    ))}
-                    <div ref={messagesEndRef} />
+                    </>
+                  );
+                }
+                return (
+                  <div className="flex-1 flex flex-col items-center justify-center opacity-10">
+                    <Shield size={80} strokeWidth={1} />
+                    <p className="mt-6 text-[10px] uppercase tracking-[0.4em]">নিরাপদ পর্যবেক্ষণ সক্রিয়</p>
                   </div>
-                </>
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center opacity-10">
-                  <Shield size={80} strokeWidth={1} />
-                  <p className="mt-6 text-[10px] uppercase tracking-[0.4em]">নিরাপদ পর্যবেক্ষণ সক্রিয়</p>
-                </div>
-              )}
+                );
+              })()}
             </main>
           </motion.div>
         )}

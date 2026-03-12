@@ -18,7 +18,8 @@ async function startServer() {
   // State
   let onlineUsers = new Set();
   let matchingQueue: string[] = [];
-  let activeChats: { [roomId: string]: { users: string[], messages: any[] } } = {};
+  let activeChats: { [roomId: string]: ChatSession } = {};
+  let chatHistory: ChatSession[] = [];
 
   io.on("connection", (socket) => {
     onlineUsers.add(socket.id);
@@ -72,17 +73,20 @@ async function startServer() {
     });
 
     socket.on("leaveChat", (roomId) => {
-      socket.leave(roomId);
-      io.to(roomId).emit("partnerLeft");
-      delete activeChats[roomId];
-      io.to("admin_room").emit("chatEnded", roomId);
+      if (activeChats[roomId]) {
+        chatHistory.push({ ...activeChats[roomId], endedAt: new Date().toISOString() });
+        socket.leave(roomId);
+        io.to(roomId).emit("partnerLeft");
+        delete activeChats[roomId];
+        io.to("admin_room").emit("chatUpdate", { active: activeChats, history: chatHistory });
+      }
     });
 
     // Admin logic
     socket.on("adminLogin", (code) => {
       if (code === "676476") {
         socket.join("admin_room");
-        socket.emit("adminAuthSuccess", activeChats);
+        socket.emit("adminAuthSuccess", { active: activeChats, history: chatHistory });
       } else {
         socket.emit("adminAuthFail");
       }
@@ -98,9 +102,10 @@ async function startServer() {
       // Handle active chats
       for (const roomId in activeChats) {
         if (activeChats[roomId].users.includes(socket.id)) {
+          chatHistory.push({ ...activeChats[roomId], endedAt: new Date().toISOString() });
           io.to(roomId).emit("partnerLeft");
           delete activeChats[roomId];
-          io.to("admin_room").emit("chatEnded", roomId);
+          io.to("admin_room").emit("chatUpdate", { active: activeChats, history: chatHistory });
         }
       }
     });
