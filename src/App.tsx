@@ -298,21 +298,23 @@ export default function App() {
               <div ref={messagesEndRef} />
             </div>
 
-            <form onSubmit={handleSendMessage} className="p-6">
-              <div className="relative group">
-                <input
-                  type="text"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="কিছু বলুন..."
-                  className="w-full glass rounded-2xl py-5 pl-6 pr-16 focus:outline-none focus:ring-1 focus:ring-primary/20 transition-all text-sm"
-                />
+            <form onSubmit={handleSendMessage} className="p-4 md:p-6 border-t border-white/5 bg-bg/50 backdrop-blur-xl">
+              <div className="flex items-center gap-3 max-w-4xl mx-auto">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="কিছু বলুন..."
+                    className="w-full glass rounded-2xl py-4 px-6 focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all text-sm md:text-base"
+                  />
+                </div>
                 <button
                   type="submit"
                   disabled={!inputText.trim()}
-                  className="absolute right-2 top-2 bottom-2 aspect-square btn-vibrant text-white rounded-xl flex items-center justify-center disabled:opacity-20 transition-all"
+                  className="h-[52px] w-[52px] md:h-[60px] md:w-[60px] btn-vibrant text-white rounded-2xl flex items-center justify-center disabled:opacity-20 transition-all active:scale-95 shadow-lg shadow-primary/20 shrink-0"
                 >
-                  <Send size={18} />
+                  <Send size={24} className="md:w-7 md:h-7" />
                 </button>
               </div>
             </form>

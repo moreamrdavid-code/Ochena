@@ -32,6 +32,7 @@ async function startServer() {
         const roomId = `room_${Math.random().toString(36).substring(7)}`;
         
         activeChats[roomId] = {
+          roomId,
           users: [socket.id, partnerId],
           messages: []
         };
