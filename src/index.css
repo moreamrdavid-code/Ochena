@@ -1,0 +1,65 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Sans+Bengali:wght@400;700&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans Bengali", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", serif;
+  
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-accent: var(--accent);
+  --color-muted: var(--muted);
+  --color-primary: #6366f1;
+  --color-secondary: #ec4899;
+}
+
+:root {
+  --bg: #0A0A0B;
+  --surface: #161618;
+  --accent: #E2E2E2;
+  --muted: #888888;
+  --glass-bg: rgba(255, 255, 255, 0.03);
+  --glass-border: rgba(255, 255, 255, 0.05);
+}
+
+[data-theme='light'] {
+  --bg: #F8F9FA;
+  --surface: #FFFFFF;
+  --accent: #1A1A1C;
+  --muted: #666666;
+  --glass-bg: rgba(0, 0, 0, 0.03);
+  --glass-border: rgba(0, 0, 0, 0.05);
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-accent antialiased transition-colors duration-300;
+  }
+}
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+}
+
+.btn-vibrant {
+  @apply relative overflow-hidden transition-all duration-300 active:scale-95 shadow-lg;
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+  background-size: 200% 200%;
+}
+
+.btn-vibrant:hover {
+  background-position: 100% 100%;
+  @apply shadow-xl scale-105;
+}
+
+.chat-bubble-user {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.chat-bubble-partner {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+}
