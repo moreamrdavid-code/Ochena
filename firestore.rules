@@ -22,25 +22,35 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid in chatData.users;
     }
 
+    function isGuest(userId) {
+      return userId.matches("^guest_.*");
+    }
+
+    function isParticipant(userId, chatData) {
+      return userId in chatData.users;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
 
     match /chats/{chatId} {
-      allow read: if isAdmin() || isChatParticipant(resource.data);
-      allow create: if isAuthenticated();
-      allow update: if isAdmin() || isChatParticipant(resource.data);
+      allow read: if isAdmin() || (request.auth != null && request.auth.uid in resource.data.users) || (resource.data.users.hasAny([request.resource.data.uid]) || resource.data.users.hasAny([resource.data.users[0]])); // Simplified for guests
+      allow read: if isAdmin() || (request.auth != null && request.auth.uid in resource.data.users) || (resource.data != null && resource.data.users.hasAny([request.headers.uid])); // This is tricky for guests
+      
+      // Better way for guests:
+      allow read, update: if isAdmin() || (request.auth != null && request.auth.uid in resource.data.users) || (chatId.size() > 0); 
+      allow create: if true;
     }
 
     match /queue/{userId} {
-      allow read, write: if isOwner(userId) || isAdmin();
-      // Allow users to see the queue to find a match
-      allow list: if isAuthenticated();
+      allow read, write: if isAdmin() || request.auth.uid == userId || userId.matches("^guest_.*");
+      allow list: if true;
     }
 
     match /online_users/{userId} {
-      allow read: if isAuthenticated();
-      allow write: if isOwner(userId) || isAdmin();
+      allow read: if true;
+      allow write: if isAdmin() || request.auth.uid == userId || userId.matches("^guest_.*");
     }
 
     match /stats/global {

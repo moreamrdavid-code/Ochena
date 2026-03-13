@@ -27,7 +27,8 @@ interface ChatSession {
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<{ uid: string; isGuest: boolean } | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [view, setView] = useState<View>('home');
   const [onlineCount, setOnlineCount] = useState(0);
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -45,12 +46,21 @@ export default function App() {
     selectedAdminChatRef.current = selectedAdminChat;
   }, [selectedAdminChat]);
 
-  // Auth Listener
+  // Auth & Guest Session Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (!u) {
-        loginAnonymously().catch(console.error);
+      if (u) {
+        setUser({ uid: u.uid, isGuest: false });
+        setIsAuthLoading(false);
+      } else {
+        // Check for existing guest ID in localStorage
+        let guestId = localStorage.getItem('chat_guest_id');
+        if (!guestId) {
+          guestId = 'guest_' + Math.random().toString(36).substring(2, 15);
+          localStorage.setItem('chat_guest_id', guestId);
+        }
+        setUser({ uid: guestId, isGuest: true });
+        setIsAuthLoading(false);
       }
     });
     return () => unsubscribe();
@@ -62,9 +72,11 @@ export default function App() {
 
     // Set heartbeat
     const heartbeat = async () => {
-      await setDoc(doc(db, 'online_users', user.uid), {
-        lastActive: serverTimestamp()
-      });
+      try {
+        await setDoc(doc(db, 'online_users', user.uid), {
+          lastActive: serverTimestamp()
+        });
+      } catch (e) { console.error("Heartbeat error:", e); }
     };
     heartbeat();
     const interval = setInterval(heartbeat, 30000); // Every 30s
@@ -73,7 +85,7 @@ export default function App() {
     const q = query(collection(db, 'online_users'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setOnlineCount(snapshot.size);
-    });
+    }, (err) => console.error("Online count error:", err));
 
     return () => {
       clearInterval(interval);
@@ -112,34 +124,38 @@ export default function App() {
         // Remove from queue
         deleteDoc(doc(db, 'queue', user.uid)).catch(console.error);
       }
-    });
+    }, (err) => console.error("Chat listener error:", err));
 
     // Try to find someone in the queue
     const tryMatch = async () => {
-      const queueQuery = query(
-        collection(db, 'queue'),
-        orderBy('timestamp', 'asc'),
-        limit(5)
-      );
-      const queueSnap = await getDocs(queueQuery);
-      const others = queueSnap.docs.filter(d => d.id !== user.uid);
-      
-      if (others.length > 0) {
-        const partner = others[0].data();
-        const newRoomId = `room_${Math.random().toString(36).substring(7)}`;
+      try {
+        const queueQuery = query(
+          collection(db, 'queue'),
+          orderBy('timestamp', 'asc'),
+          limit(5)
+        );
+        const queueSnap = await getDocs(queueQuery);
+        const others = queueSnap.docs.filter(d => d.id !== user.uid);
         
-        // Create Chat
-        await setDoc(doc(db, 'chats', newRoomId), {
-          roomId: newRoomId,
-          users: [user.uid, partner.uid],
-          messages: [],
-          status: 'active',
-          createdAt: serverTimestamp()
-        });
+        if (others.length > 0) {
+          const partner = others[0].data();
+          const newRoomId = `room_${Math.random().toString(36).substring(7)}`;
+          
+          // Create Chat
+          await setDoc(doc(db, 'chats', newRoomId), {
+            roomId: newRoomId,
+            users: [user.uid, partner.uid],
+            messages: [],
+            status: 'active',
+            createdAt: serverTimestamp()
+          });
 
-        // Cleanup Queue
-        await deleteDoc(doc(db, 'queue', user.uid));
-        await deleteDoc(doc(db, 'queue', partner.uid));
+          // Cleanup Queue
+          await deleteDoc(doc(db, 'queue', user.uid));
+          await deleteDoc(doc(db, 'queue', partner.uid));
+        }
+      } catch (e) {
+        console.error("Matching error:", e);
       }
     };
 
@@ -167,7 +183,7 @@ export default function App() {
         setView('home');
         setRoomId(null);
       }
-    });
+    }, (err) => console.error("Active chat error:", err));
 
     return () => unsubscribe();
   }, [user, roomId, view]);
@@ -191,18 +207,25 @@ export default function App() {
       });
 
       setAdminData({ active, history });
-    });
+    }, (err) => console.error("Admin listener error:", err));
 
     return () => unsubscribe();
   }, [view]);
 
   const handleStartMatching = async () => {
     if (!user) return;
-    setView('matching');
-    await setDoc(doc(db, 'queue', user.uid), {
-      uid: user.uid,
-      timestamp: serverTimestamp()
-    });
+    
+    try {
+      setView('matching');
+      await setDoc(doc(db, 'queue', user.uid), {
+        uid: user.uid,
+        timestamp: serverTimestamp()
+      });
+    } catch (e) {
+      console.error("Queue error:", e);
+      alert("ম্যাচিং শুরু করা যাচ্ছে না। দয়া করে আবার চেষ্টা করুন।");
+      setView('home');
+    }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -305,10 +328,11 @@ export default function App() {
               >
                 <button
                   onClick={handleStartMatching}
-                  className="btn-vibrant px-12 py-6 text-white rounded-full text-2xl font-bold uppercase tracking-tighter shadow-2xl"
+                  disabled={isAuthLoading}
+                  className="btn-vibrant px-12 py-6 text-white rounded-full text-2xl font-bold uppercase tracking-tighter shadow-2xl disabled:opacity-50"
                 >
                   <span className="relative z-10 flex items-center gap-3">
-                    চ্যাট শুরু করুন <ChevronRight size={28} />
+                    {isAuthLoading ? "অপেক্ষা করুন..." : "চ্যাট শুরু করুন"} <ChevronRight size={28} />
                   </span>
                 </button>
 
