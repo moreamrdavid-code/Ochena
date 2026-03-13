@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { MessageCircle, Shield, Users, Send, LogOut, Loader2, Lock, ChevronRight, Hash, Sun, Moon, User } from 'lucide-react';
+import { MessageCircle, Shield, Users, Send, LogOut, Loader2, Lock, ChevronRight, Hash, Sun, Moon, User as UserIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  auth, db, loginAnonymously, loginWithGoogle, onAuthStateChanged,
+  collection, doc, setDoc, getDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, serverTimestamp, arrayUnion, Timestamp
+} from './firebase';
+import { User } from 'firebase/auth';
 
 type View = 'home' | 'gender_select' | 'matching' | 'chat' | 'admin_login' | 'admin_panel';
 type Gender = 'male' | 'female';
@@ -17,68 +21,67 @@ interface ChatSession {
   roomId: string;
   users: string[];
   messages: Message[];
+  status: 'active' | 'ended';
+  createdAt: any;
+  endedAt?: any;
 }
 
 export default function App() {
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [view, setView] = useState<View>('home');
   const [onlineCount, setOnlineCount] = useState(0);
   const [roomId, setRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
-  const [adminCode, setAdminCode] = useState('');
   const [adminData, setAdminData] = useState<{ active: { [key: string]: ChatSession }, history: ChatSession[] }>({ active: {}, history: [] });
   const [adminTab, setAdminTab] = useState<'active' | 'history'>('active');
   const [selectedAdminChat, setSelectedAdminChat] = useState<string | null>(null);
   const selectedAdminChatRef = useRef<string | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const matchingInterval = useRef<any>(null);
 
   useEffect(() => {
     selectedAdminChatRef.current = selectedAdminChat;
   }, [selectedAdminChat]);
 
+  // Auth Listener
   useEffect(() => {
-    const newSocket = io();
-    setSocket(newSocket);
-
-    newSocket.on('onlineCount', (count: number) => {
-      setOnlineCount(count);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) {
+        loginAnonymously().catch(console.error);
+      }
     });
+    return () => unsubscribe();
+  }, []);
 
-    newSocket.on('matched', ({ roomId }: { roomId: string }) => {
-      setRoomId(roomId);
-      setMessages([]);
-      setView('chat');
-    });
+  // Online Count & Heartbeat
+  useEffect(() => {
+    if (!user) return;
 
-    newSocket.on('message', (message: Message) => {
-      setMessages((prev) => [...prev, message]);
-    });
+    // Set heartbeat
+    const heartbeat = async () => {
+      await setDoc(doc(db, 'online_users', user.uid), {
+        lastActive: serverTimestamp()
+      });
+    };
+    heartbeat();
+    const interval = setInterval(heartbeat, 30000); // Every 30s
 
-    newSocket.on('partnerLeft', () => {
-      setView('home');
-      setRoomId(null);
-    });
-
-    newSocket.on('adminAuthSuccess', (data: { active: { [key: string]: ChatSession }, history: ChatSession[] }) => {
-      setAdminData(data);
-      setView('admin_panel');
-    });
-
-    newSocket.on('adminAuthFail', () => {
-      alert('ভুল অ্যাডমিন কোড।');
-    });
-
-    newSocket.on('chatUpdate', (data: { active: { [key: string]: ChatSession }, history: ChatSession[] }) => {
-      setAdminData(data);
+    // Listen to online count
+    const q = query(collection(db, 'online_users'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setOnlineCount(snapshot.size);
     });
 
     return () => {
-      newSocket.close();
+      clearInterval(interval);
+      unsubscribe();
     };
-  }, []);
+  }, [user]);
 
+  // Theme & Scroll
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
@@ -87,33 +90,161 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleStartMatching = () => {
-    if (socket) {
-      socket.emit('joinQueue');
-      setView('matching');
-    }
+  // Matching & Chat Listener
+  useEffect(() => {
+    if (!user || view !== 'matching') return;
+
+    // Listen for chats I'm invited to
+    const q = query(
+      collection(db, 'chats'),
+      where('users', 'array-contains', user.uid),
+      where('status', '==', 'active'),
+      limit(1)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        const chatDoc = snapshot.docs[0];
+        const data = chatDoc.data() as ChatSession;
+        setRoomId(chatDoc.id);
+        setMessages(data.messages || []);
+        setView('chat');
+        // Remove from queue
+        deleteDoc(doc(db, 'queue', user.uid)).catch(console.error);
+      }
+    });
+
+    // Try to find someone in the queue
+    const tryMatch = async () => {
+      const queueQuery = query(
+        collection(db, 'queue'),
+        orderBy('timestamp', 'asc'),
+        limit(5)
+      );
+      const queueSnap = await getDocs(queueQuery);
+      const others = queueSnap.docs.filter(d => d.id !== user.uid);
+      
+      if (others.length > 0) {
+        const partner = others[0].data();
+        const newRoomId = `room_${Math.random().toString(36).substring(7)}`;
+        
+        // Create Chat
+        await setDoc(doc(db, 'chats', newRoomId), {
+          roomId: newRoomId,
+          users: [user.uid, partner.uid],
+          messages: [],
+          status: 'active',
+          createdAt: serverTimestamp()
+        });
+
+        // Cleanup Queue
+        await deleteDoc(doc(db, 'queue', user.uid));
+        await deleteDoc(doc(db, 'queue', partner.uid));
+      }
+    };
+
+    const matchInterval = setInterval(tryMatch, 3000);
+    return () => {
+      unsubscribe();
+      clearInterval(matchInterval);
+    };
+  }, [user, view]);
+
+  // Active Chat Listener
+  useEffect(() => {
+    if (!user || !roomId || view !== 'chat') return;
+
+    const unsubscribe = onSnapshot(doc(db, 'chats', roomId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as ChatSession;
+        if (data.status === 'ended') {
+          setView('home');
+          setRoomId(null);
+          return;
+        }
+        setMessages(data.messages || []);
+      } else {
+        setView('home');
+        setRoomId(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user, roomId, view]);
+
+  // Admin Panel Listener
+  useEffect(() => {
+    if (view !== 'admin_panel') return;
+
+    const q = query(collection(db, 'chats'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const active: { [key: string]: ChatSession } = {};
+      const history: ChatSession[] = [];
+
+      snapshot.docs.forEach(d => {
+        const data = d.data() as ChatSession;
+        if (data.status === 'active') {
+          active[d.id] = data;
+        } else {
+          history.push(data);
+        }
+      });
+
+      setAdminData({ active, history });
+    });
+
+    return () => unsubscribe();
+  }, [view]);
+
+  const handleStartMatching = async () => {
+    if (!user) return;
+    setView('matching');
+    await setDoc(doc(db, 'queue', user.uid), {
+      uid: user.uid,
+      timestamp: serverTimestamp()
+    });
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (socket && roomId && inputText.trim()) {
-      socket.emit('sendMessage', { roomId, text: inputText });
+    if (user && roomId && inputText.trim()) {
+      const newMessage: Message = {
+        id: Math.random().toString(36).substring(7),
+        sender: user.uid,
+        text: inputText,
+        timestamp: new Date().toISOString()
+      };
+      await updateDoc(doc(db, 'chats', roomId), {
+        messages: arrayUnion(newMessage)
+      });
       setInputText('');
     }
   };
 
-  const handleLeaveChat = () => {
-    if (socket && roomId) {
-      socket.emit('leaveChat', roomId);
+  const handleLeaveChat = async () => {
+    if (roomId) {
+      await updateDoc(doc(db, 'chats', roomId), {
+        status: 'ended',
+        endedAt: serverTimestamp()
+      });
       setView('home');
       setRoomId(null);
     }
   };
 
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (socket) {
-      socket.emit('adminLogin', adminCode);
+    try {
+      const result = await loginWithGoogle();
+      if (result.user.email === "ridoymostofa.1@gmail.com") {
+        setView('admin_panel');
+      } else {
+        alert('আপনি অ্যাডমিন নন।');
+        await auth.signOut();
+      }
+    } catch (error) {
+      console.error(error);
+      alert('লগইন ব্যর্থ হয়েছে।');
     }
   };
 
@@ -234,7 +365,10 @@ export default function App() {
             <h2 className="text-3xl font-serif italic mb-4">কাউকে খোঁজা হচ্ছে...</h2>
             <p className="text-xs uppercase tracking-[0.3em] text-muted">অচেনা বন্ধুর সাথে সংযোগ করা হচ্ছে</p>
             <button
-              onClick={() => { socket?.emit('leaveQueue'); setView('home'); }}
+              onClick={async () => { 
+                if (user) await deleteDoc(doc(db, 'queue', user.uid));
+                setView('home'); 
+              }}
               className="mt-16 text-[10px] uppercase tracking-[0.3em] border-b border-muted pb-1 text-muted hover:text-accent hover:border-accent transition-all"
             >
               খোঁজা বন্ধ করুন
@@ -274,19 +408,19 @@ export default function App() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   key={msg.id}
-                  className={`flex ${msg.sender === socket?.id ? 'justify-end' : 'justify-start'}`}
+                  className={`flex ${msg.sender === user?.uid ? 'justify-end' : 'justify-start'}`}
                 >
                   <div className="max-w-[85%] md:max-w-[70%] space-y-1">
                     <div
                       className={`px-5 py-4 rounded-3xl text-sm leading-relaxed ${
-                        msg.sender === socket?.id
+                        msg.sender === user?.uid
                           ? 'chat-bubble-user text-white rounded-tr-none shadow-lg'
                           : 'chat-bubble-partner text-accent rounded-tl-none'
                       }`}
                     >
                       {msg.text}
                     </div>
-                    <p className={`text-[9px] font-mono opacity-30 ${msg.sender === socket?.id ? 'text-right' : 'text-left'}`}>
+                    <p className={`text-[9px] font-mono opacity-30 ${msg.sender === user?.uid ? 'text-right' : 'text-left'}`}>
                       {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </div>
@@ -326,29 +460,21 @@ export default function App() {
             exit={{ opacity: 0, scale: 0.98 }}
             className="flex flex-col items-center justify-center min-h-screen p-6"
           >
-            <form onSubmit={handleAdminLogin} className="w-full max-w-xs space-y-12 text-center">
+            <div className="w-full max-w-xs space-y-12 text-center">
               <div className="space-y-4">
                 <div className="w-16 h-16 glass rounded-3xl flex items-center justify-center mx-auto">
                   <Lock size={24} className="opacity-50" />
                 </div>
-                <h2 className="text-2xl font-serif italic">নিরাপত্তা গেট</h2>
+                <h2 className="text-2xl font-serif italic">অ্যাডমিন লগইন</h2>
+                <p className="text-xs text-muted">গুগল দিয়ে লগইন করুন</p>
               </div>
               
-              <input
-                type="password"
-                value={adminCode}
-                onChange={(e) => setAdminCode(e.target.value)}
-                placeholder="••••••"
-                className="w-full text-center text-5xl tracking-[0.4em] font-mono bg-transparent border-b border-accent/10 pb-4 focus:outline-none focus:border-primary/50 transition-colors"
-                autoFocus
-              />
-
               <div className="space-y-4">
                 <button
-                  type="submit"
-                  className="w-full py-4 btn-vibrant text-white rounded-xl font-bold uppercase tracking-widest text-xs"
+                  onClick={handleAdminLogin}
+                  className="w-full py-4 btn-vibrant text-white rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center gap-2"
                 >
-                  প্রবেশ করুন
+                  গুগল দিয়ে প্রবেশ করুন
                 </button>
                 <button
                   type="button"
@@ -358,7 +484,7 @@ export default function App() {
                   হোমে ফিরে যান
                 </button>
               </div>
-            </form>
+            </div>
           </motion.div>
         )}
 
@@ -374,7 +500,7 @@ export default function App() {
               <header className="p-8 border-b border-white/5">
                 <div className="flex items-center justify-between">
                   <h2 className="font-serif italic text-2xl">অচেনা প্যানেল</h2>
-                  <button onClick={() => setView('home')} className="text-[10px] uppercase tracking-widest opacity-50 hover:opacity-100">বের হন</button>
+                  <button onClick={() => { auth.signOut(); setView('home'); }} className="text-[10px] uppercase tracking-widest opacity-50 hover:opacity-100">বের হন</button>
                 </div>
               </header>
               <div className="flex border-b border-white/5">
@@ -399,7 +525,7 @@ export default function App() {
                       <p className="text-[10px] uppercase tracking-widest">কোনো সক্রিয় সেশন নেই</p>
                     </div>
                   ) : (
-                    Object.values(adminData.active).map((chat) => (
+                    (Object.values(adminData.active) as ChatSession[]).map((chat) => (
                       <button
                         key={chat.roomId}
                         onClick={() => setSelectedAdminChat(chat.roomId)}
@@ -412,10 +538,6 @@ export default function App() {
                           <span className="text-[10px] uppercase tracking-widest font-bold text-muted">
                             {chat.messages.length} মেসেজ
                           </span>
-                          <div className="flex -space-x-2">
-                            <div className="w-4 h-4 rounded-full bg-primary/20 border border-white/10" />
-                            <div className="w-4 h-4 rounded-full bg-secondary/20 border border-white/10" />
-                          </div>
                         </div>
                       </button>
                     ))
@@ -426,12 +548,12 @@ export default function App() {
                       <p className="text-[10px] uppercase tracking-widest">কোনো ইতিহাস নেই</p>
                     </div>
                   ) : (
-                    adminData.history.map((chat, idx) => (
+                    adminData.history.map((chat) => (
                       <button
-                        key={chat.roomId + idx}
-                        onClick={() => setSelectedAdminChat(chat.roomId + '_hist_' + idx)}
+                        key={chat.roomId + Math.random()}
+                        onClick={() => setSelectedAdminChat(chat.roomId)}
                         className={`w-full p-5 text-left rounded-2xl transition-all ${
-                          selectedAdminChat === chat.roomId + '_hist_' + idx ? 'glass bg-primary/10' : 'hover:bg-white/5'
+                          selectedAdminChat === chat.roomId ? 'glass bg-primary/10' : 'hover:bg-white/5'
                         }`}
                       >
                         <p className="text-[10px] font-mono mb-2 opacity-50">{chat.roomId}</p>

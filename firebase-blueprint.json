@@ -1,0 +1,65 @@
+{
+  "entities": {
+    "Message": {
+      "title": "Message",
+      "description": "A single chat message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sender": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sender", "text", "timestamp"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "A chat session between two users",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "users": { 
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "Message" }
+        },
+        "status": { "type": "string", "enum": ["active", "ended"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "users", "messages", "status", "createdAt"]
+    },
+    "QueueEntry": {
+      "title": "QueueEntry",
+      "description": "A user waiting to be matched",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "gender": { "type": "string", "enum": ["male", "female"] },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "gender", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Collection of chat sessions"
+    },
+    "/queue/{userId}": {
+      "schema": "QueueEntry",
+      "description": "Users waiting for a match"
+    },
+    "/online_users/{userId}": {
+      "schema": "object",
+      "description": "Heartbeat for online users"
+    },
+    "/stats/global": {
+      "schema": "object",
+      "description": "Global statistics"
+    }
+  }
+}

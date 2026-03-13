@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "ridoymostofa.1@gmail.com" && request.auth.token.email_verified == true);
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isChatParticipant(chatData) {
+      return isAuthenticated() && request.auth.uid in chatData.users;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /chats/{chatId} {
+      allow read: if isAdmin() || isChatParticipant(resource.data);
+      allow create: if isAuthenticated();
+      allow update: if isAdmin() || isChatParticipant(resource.data);
+    }
+
+    match /queue/{userId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+      // Allow users to see the queue to find a match
+      allow list: if isAuthenticated();
+    }
+
+    match /online_users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) || isAdmin();
+    }
+
+    match /stats/global {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+  }
+}
