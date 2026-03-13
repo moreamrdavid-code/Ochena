@@ -35,13 +35,12 @@ service cloud.firestore {
     // ===============================================================
 
     match /chats/{chatId} {
-      // Allow read/update if user is in the 'users' array (works for both Auth and Guests)
-      allow read, update: if isAdmin() || (chatId.size() > 0); 
-      allow create: if true;
+      // Allow read/update if user is in the 'users' array
+      allow read, update, create: if true; 
     }
 
     match /queue/{userId} {
-      allow read, write: if true; // Allow guests to join and leave queue
+      allow read, write, delete: if true; 
     }
 
     match /online_users/{userId} {

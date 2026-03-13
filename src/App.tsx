@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, Shield, Users, Send, LogOut, Loader2, Lock, ChevronRight, Hash, Sun, Moon, User as UserIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { io, Socket } from 'socket.io-client';
 import { 
-  auth, loginWithGoogle, onAuthStateChanged
+  auth, db, loginWithGoogle, onAuthStateChanged,
+  collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, limit, serverTimestamp, arrayUnion
 } from './firebase';
 
 type View = 'home' | 'gender_select' | 'matching' | 'chat' | 'admin_login' | 'admin_panel';
@@ -33,38 +33,6 @@ export default function App() {
   const [inputText, setInputText] = useState('');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const socketRef = useRef<Socket | null>(null);
-
-  // Initialize Socket
-  useEffect(() => {
-    const socket = io();
-    socketRef.current = socket;
-
-    socket.on('stats', (data) => {
-      setOnlineCount(data.online || 1);
-    });
-
-    socket.on('matched', ({ roomId }) => {
-      console.log("Matched in room:", roomId);
-      setRoomId(roomId);
-      setMessages([]);
-      setView('chat');
-    });
-
-    socket.on('receive-message', (message: Message) => {
-      setMessages(prev => [...prev, message]);
-    });
-
-    socket.on('chat-ended', () => {
-      setView('home');
-      setRoomId(null);
-      setMessages([]);
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-  }, []);
 
   // Auth Listener
   useEffect(() => {
@@ -85,6 +53,86 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Online Count & Heartbeat (Vercel Friendly)
+  useEffect(() => {
+    if (!user) return;
+    const heartbeat = () => {
+      setDoc(doc(db, 'online_users', user.uid), { lastActive: serverTimestamp() }).catch(() => {});
+    };
+    heartbeat();
+    const interval = setInterval(heartbeat, 30000);
+    const q = query(collection(db, 'online_users'), limit(100));
+    const unsubscribe = onSnapshot(q, (snap) => setOnlineCount(snap.size || 1));
+    return () => {
+      clearInterval(interval);
+      unsubscribe();
+    };
+  }, [user]);
+
+  // Matching & Chat Listener (The "Handshake" Logic)
+  useEffect(() => {
+    if (!user || view !== 'matching') return;
+
+    // 1. Listen for rooms I'm in
+    const chatQuery = query(
+      collection(db, 'chats'),
+      where('users', 'array-contains', user.uid),
+      where('status', '==', 'active'),
+      limit(1)
+    );
+
+    const unsubscribeChat = onSnapshot(chatQuery, (snapshot) => {
+      if (!snapshot.empty) {
+        const chatDoc = snapshot.docs[0];
+        setRoomId(chatDoc.id);
+        setView('chat');
+        deleteDoc(doc(db, 'queue', user.uid)).catch(() => {});
+      }
+    });
+
+    // 2. Look for others in the queue
+    const queueQuery = query(collection(db, 'queue'), limit(10));
+    const unsubscribeQueue = onSnapshot(queueQuery, async (snapshot) => {
+      const others = snapshot.docs.filter(d => d.id !== user.uid);
+      if (others.length > 0) {
+        const partnerUid = others[0].id;
+        // Stable tie-breaker: smaller UID creates the room
+        if (user.uid < partnerUid) {
+          const newRoomId = `room_${[user.uid, partnerUid].sort().join('_').substring(0, 20)}`;
+          await setDoc(doc(db, 'chats', newRoomId), {
+            roomId: newRoomId,
+            users: [user.uid, partnerUid],
+            messages: [],
+            status: 'active',
+            createdAt: serverTimestamp()
+          }, { merge: true });
+        }
+      }
+    });
+
+    return () => {
+      unsubscribeChat();
+      unsubscribeQueue();
+    };
+  }, [user, view]);
+
+  // Active Chat Listener
+  useEffect(() => {
+    if (!user || !roomId || view !== 'chat') return;
+    const unsubscribe = onSnapshot(doc(db, 'chats', roomId), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as ChatSession;
+        if (data.status === 'ended') {
+          setView('home');
+          setRoomId(null);
+        } else {
+          setMessages(data.messages || []);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [user, roomId, view]);
+
   // Theme & Scroll
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -94,32 +142,37 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleStartMatching = () => {
-    if (!socketRef.current) return;
+  const handleStartMatching = async () => {
+    if (!user) return;
     setView('matching');
-    socketRef.current.emit('join-queue');
+    await setDoc(doc(db, 'queue', user.uid), { uid: user.uid, timestamp: serverTimestamp() });
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (socketRef.current && roomId && inputText.trim()) {
-      socketRef.current.emit('send-message', { roomId, text: inputText });
+    if (user && roomId && inputText.trim()) {
+      const msg: Message = {
+        id: Math.random().toString(36).substring(7),
+        sender: user.uid,
+        text: inputText,
+        timestamp: new Date().toISOString()
+      };
+      await updateDoc(doc(db, 'chats', roomId), { messages: arrayUnion(msg) });
       setInputText('');
     }
   };
 
-  const handleLeaveChat = () => {
-    if (socketRef.current && roomId) {
-      socketRef.current.emit('end-chat', roomId);
+  const handleLeaveChat = async () => {
+    if (roomId) {
+      await updateDoc(doc(db, 'chats', roomId), { status: 'ended' });
       setView('home');
       setRoomId(null);
-      setMessages([]);
     }
   };
 
-  const handleCancelMatching = () => {
-    if (socketRef.current) {
-      socketRef.current.emit('leave-queue');
+  const handleCancelMatching = async () => {
+    if (user) {
+      await deleteDoc(doc(db, 'queue', user.uid));
       setView('home');
     }
   };
