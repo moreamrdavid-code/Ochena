@@ -69,11 +69,11 @@ export default function App() {
     };
   }, [user]);
 
-  // Matching & Chat Listener (The "Handshake" Logic)
+  // Matching & Chat Listener (Deterministic Handshake)
   useEffect(() => {
     if (!user || view !== 'matching') return;
 
-    // 1. Listen for rooms I'm in
+    // 1. Listen for active rooms where I am a participant
     const chatQuery = query(
       collection(db, 'chats'),
       where('users', 'array-contains', user.uid),
@@ -86,26 +86,48 @@ export default function App() {
         const chatDoc = snapshot.docs[0];
         setRoomId(chatDoc.id);
         setView('chat');
+        // Cleanup queue immediately
         deleteDoc(doc(db, 'queue', user.uid)).catch(() => {});
       }
     });
 
-    // 2. Look for others in the queue
-    const queueQuery = query(collection(db, 'queue'), limit(10));
+    // 2. Deterministic Matching Logic
+    const queueQuery = query(collection(db, 'queue'), limit(50)); // Listen to a larger chunk of queue
     const unsubscribeQueue = onSnapshot(queueQuery, async (snapshot) => {
-      const others = snapshot.docs.filter(d => d.id !== user.uid);
-      if (others.length > 0) {
-        const partnerUid = others[0].id;
-        // Stable tie-breaker: smaller UID creates the room
+      // Get all users in queue, sorted by their join time (if available) or ID
+      const allInQueue = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() } as any))
+        .sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0) || a.id.localeCompare(b.id));
+
+      // Find my position in the queue
+      const myIndex = allInQueue.findIndex(u => u.id === user.uid);
+      if (myIndex === -1) return;
+
+      // Determine my partner (if I'm at index 0, partner is 1; if I'm at index 1, partner is 0)
+      // This ensures pairs are (0,1), (2,3), (4,5) etc.
+      const isEven = myIndex % 2 === 0;
+      const partnerIndex = isEven ? myIndex + 1 : myIndex - 1;
+      const partner = allInQueue[partnerIndex];
+
+      if (partner) {
+        const partnerUid = partner.id;
+        // The one with the smaller UID creates the room to avoid double creation
         if (user.uid < partnerUid) {
-          const newRoomId = `room_${[user.uid, partnerUid].sort().join('_').substring(0, 20)}`;
-          await setDoc(doc(db, 'chats', newRoomId), {
-            roomId: newRoomId,
-            users: [user.uid, partnerUid],
-            messages: [],
-            status: 'active',
-            createdAt: serverTimestamp()
-          }, { merge: true });
+          const sortedIds = [user.uid, partnerUid].sort();
+          const newRoomId = `room_${sortedIds[0].substring(0, 10)}_${sortedIds[1].substring(0, 10)}`;
+          
+          try {
+            await setDoc(doc(db, 'chats', newRoomId), {
+              roomId: newRoomId,
+              users: [user.uid, partnerUid],
+              messages: [],
+              status: 'active',
+              createdAt: serverTimestamp()
+            }, { merge: true });
+            console.log("Room created successfully:", newRoomId);
+          } catch (e) {
+            console.error("Match creation error:", e);
+          }
         }
       }
     });
