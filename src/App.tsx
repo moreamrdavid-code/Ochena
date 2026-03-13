@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, Shield, Users, Send, LogOut, Loader2, Lock, ChevronRight, Hash, Sun, Moon, User as UserIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { io, Socket } from 'socket.io-client';
 import { 
-  auth, db, loginAnonymously, loginWithGoogle, onAuthStateChanged,
-  collection, doc, setDoc, getDoc, updateDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, getDocs, serverTimestamp, arrayUnion, Timestamp
+  auth, loginWithGoogle, onAuthStateChanged
 } from './firebase';
-import { User } from 'firebase/auth';
 
 type View = 'home' | 'gender_select' | 'matching' | 'chat' | 'admin_login' | 'admin_panel';
 type Gender = 'male' | 'female';
@@ -22,8 +21,6 @@ interface ChatSession {
   users: string[];
   messages: Message[];
   status: 'active' | 'ended';
-  createdAt: any;
-  endedAt?: any;
 }
 
 export default function App() {
@@ -34,26 +31,48 @@ export default function App() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
-  const [adminData, setAdminData] = useState<{ active: { [key: string]: ChatSession }, history: ChatSession[] }>({ active: {}, history: [] });
-  const [adminTab, setAdminTab] = useState<'active' | 'history'>('active');
-  const [selectedAdminChat, setSelectedAdminChat] = useState<string | null>(null);
-  const selectedAdminChatRef = useRef<string | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const matchingInterval = useRef<any>(null);
+  const socketRef = useRef<Socket | null>(null);
 
+  // Initialize Socket
   useEffect(() => {
-    selectedAdminChatRef.current = selectedAdminChat;
-  }, [selectedAdminChat]);
+    const socket = io();
+    socketRef.current = socket;
 
-  // Auth & Guest Session Listener
+    socket.on('stats', (data) => {
+      setOnlineCount(data.online || 1);
+    });
+
+    socket.on('matched', ({ roomId }) => {
+      console.log("Matched in room:", roomId);
+      setRoomId(roomId);
+      setMessages([]);
+      setView('chat');
+    });
+
+    socket.on('receive-message', (message: Message) => {
+      setMessages(prev => [...prev, message]);
+    });
+
+    socket.on('chat-ended', () => {
+      setView('home');
+      setRoomId(null);
+      setMessages([]);
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
+  // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       if (u) {
         setUser({ uid: u.uid, isGuest: false });
         setIsAuthLoading(false);
       } else {
-        // Use sessionStorage instead of localStorage for easier testing in multiple tabs
         let guestId = sessionStorage.getItem('chat_guest_id');
         if (!guestId) {
           guestId = 'guest_' + Math.random().toString(36).substring(2, 15);
@@ -66,37 +85,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Online Count & Heartbeat
-  useEffect(() => {
-    if (!user) return;
-
-    // Set heartbeat
-    const heartbeat = async () => {
-      try {
-        await setDoc(doc(db, 'online_users', user.uid), {
-          lastActive: serverTimestamp()
-        });
-      } catch (e) { console.error("Heartbeat error:", e); }
-    };
-    heartbeat();
-    const interval = setInterval(heartbeat, 30000); // Every 30s
-
-    // Listen to online count - simplified to avoid index errors
-    const q = query(collection(db, 'online_users'), limit(100));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      // If count is 0, show at least 1 (the current user)
-      setOnlineCount(snapshot.size || 1);
-    }, (err) => {
-      console.error("Online count error:", err);
-      setOnlineCount(1);
-    });
-
-    return () => {
-      clearInterval(interval);
-      unsubscribe();
-    };
-  }, [user]);
-
   // Theme & Scroll
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -106,156 +94,33 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Matching & Chat Listener
-  useEffect(() => {
-    if (!user || view !== 'matching') return;
-
-    console.log("Real-time matching active for:", user.uid);
-
-    // 1. Listen for chats I'm invited to
-    const chatQuery = query(
-      collection(db, 'chats'),
-      where('users', 'array-contains', user.uid),
-      limit(1)
-    );
-
-    const unsubscribeChat = onSnapshot(chatQuery, (snapshot) => {
-      if (!snapshot.empty) {
-        const chatDoc = snapshot.docs[0];
-        const data = chatDoc.data() as ChatSession;
-        if (data.status === 'active') {
-          console.log("Joined chat room:", chatDoc.id);
-          setRoomId(chatDoc.id);
-          setMessages(data.messages || []);
-          setView('chat');
-          // Cleanup my queue entry
-          deleteDoc(doc(db, 'queue', user.uid)).catch(() => {});
-        }
-      }
-    });
-
-    // 2. Listen to the queue to find others
-    const queueQuery = query(collection(db, 'queue'), limit(10));
-    const unsubscribeQueue = onSnapshot(queueQuery, async (snapshot) => {
-      const others = snapshot.docs.filter(d => d.id !== user.uid);
-      
-      if (others.length > 0) {
-        const partnerDoc = others[0];
-        const partnerUid = partnerDoc.id;
-        
-        // Stable tie-breaker: only the "smaller" UID creates the room
-        if (user.uid < partnerUid) {
-          console.log("Found partner, creating room with:", partnerUid);
-          const newRoomId = `room_${user.uid.substring(6)}_${partnerUid.substring(6)}`;
-          
-          try {
-            await setDoc(doc(db, 'chats', newRoomId), {
-              roomId: newRoomId,
-              users: [user.uid, partnerUid],
-              messages: [],
-              status: 'active',
-              createdAt: serverTimestamp()
-            });
-            // Queue cleanup happens via the chat listener or after creation
-          } catch (e) {
-            console.error("Room creation failed:", e);
-          }
-        }
-      }
-    });
-
-    return () => {
-      unsubscribeChat();
-      unsubscribeQueue();
-    };
-  }, [user, view]);
-
-  // Active Chat Listener
-  useEffect(() => {
-    if (!user || !roomId || view !== 'chat') return;
-
-    const unsubscribe = onSnapshot(doc(db, 'chats', roomId), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data() as ChatSession;
-        if (data.status === 'ended') {
-          setView('home');
-          setRoomId(null);
-          return;
-        }
-        setMessages(data.messages || []);
-      } else {
-        setView('home');
-        setRoomId(null);
-      }
-    }, (err) => console.error("Active chat error:", err));
-
-    return () => unsubscribe();
-  }, [user, roomId, view]);
-
-  // Admin Panel Listener
-  useEffect(() => {
-    if (view !== 'admin_panel') return;
-
-    const q = query(collection(db, 'chats'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const active: { [key: string]: ChatSession } = {};
-      const history: ChatSession[] = [];
-
-      snapshot.docs.forEach(d => {
-        const data = d.data() as ChatSession;
-        if (data.status === 'active') {
-          active[d.id] = data;
-        } else {
-          history.push(data);
-        }
-      });
-
-      setAdminData({ active, history });
-    }, (err) => console.error("Admin listener error:", err));
-
-    return () => unsubscribe();
-  }, [view]);
-
-  const handleStartMatching = async () => {
-    if (!user) return;
-    
-    try {
-      setView('matching');
-      await setDoc(doc(db, 'queue', user.uid), {
-        uid: user.uid,
-        timestamp: serverTimestamp()
-      });
-    } catch (e) {
-      console.error("Queue error:", e);
-      alert("ম্যাচিং শুরু করা যাচ্ছে না। দয়া করে আবার চেষ্টা করুন।");
-      setView('home');
-    }
+  const handleStartMatching = () => {
+    if (!socketRef.current) return;
+    setView('matching');
+    socketRef.current.emit('join-queue');
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
+  const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (user && roomId && inputText.trim()) {
-      const newMessage: Message = {
-        id: Math.random().toString(36).substring(7),
-        sender: user.uid,
-        text: inputText,
-        timestamp: new Date().toISOString()
-      };
-      await updateDoc(doc(db, 'chats', roomId), {
-        messages: arrayUnion(newMessage)
-      });
+    if (socketRef.current && roomId && inputText.trim()) {
+      socketRef.current.emit('send-message', { roomId, text: inputText });
       setInputText('');
     }
   };
 
-  const handleLeaveChat = async () => {
-    if (roomId) {
-      await updateDoc(doc(db, 'chats', roomId), {
-        status: 'ended',
-        endedAt: serverTimestamp()
-      });
+  const handleLeaveChat = () => {
+    if (socketRef.current && roomId) {
+      socketRef.current.emit('end-chat', roomId);
       setView('home');
       setRoomId(null);
+      setMessages([]);
+    }
+  };
+
+  const handleCancelMatching = () => {
+    if (socketRef.current) {
+      socketRef.current.emit('leave-queue');
+      setView('home');
     }
   };
 
@@ -393,10 +258,7 @@ export default function App() {
             <h2 className="text-3xl font-serif italic mb-4">কাউকে খোঁজা হচ্ছে...</h2>
             <p className="text-xs uppercase tracking-[0.3em] text-muted">অচেনা বন্ধুর সাথে সংযোগ করা হচ্ছে</p>
             <button
-              onClick={async () => { 
-                if (user) await deleteDoc(doc(db, 'queue', user.uid));
-                setView('home'); 
-              }}
+              onClick={handleCancelMatching}
               className="mt-16 text-[10px] uppercase tracking-[0.3em] border-b border-muted pb-1 text-muted hover:text-accent hover:border-accent transition-all"
             >
               খোঁজা বন্ধ করুন
@@ -513,133 +375,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-          </motion.div>
-        )}
-
-        {view === 'admin_panel' && (
-          <motion.div
-            key="admin_panel"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex h-screen overflow-hidden"
-          >
-            <aside className="w-80 glass border-r border-white/5 flex flex-col">
-              <header className="p-8 border-b border-white/5">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-serif italic text-2xl">অচেনা প্যানেল</h2>
-                  <button onClick={() => { auth.signOut(); setView('home'); }} className="text-[10px] uppercase tracking-widest opacity-50 hover:opacity-100">বের হন</button>
-                </div>
-              </header>
-              <div className="flex border-b border-white/5">
-                <button 
-                  onClick={() => setAdminTab('active')}
-                  className={`flex-1 py-4 text-[10px] uppercase tracking-widest font-bold transition-all ${adminTab === 'active' ? 'text-primary border-b-2 border-primary' : 'opacity-30'}`}
-                >
-                  সক্রিয় ({Object.keys(adminData.active).length})
-                </button>
-                <button 
-                  onClick={() => setAdminTab('history')}
-                  className={`flex-1 py-4 text-[10px] uppercase tracking-widest font-bold transition-all ${adminTab === 'history' ? 'text-primary border-b-2 border-primary' : 'opacity-30'}`}
-                >
-                  ইতিহাস ({adminData.history.length})
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                {adminTab === 'active' ? (
-                  Object.values(adminData.active).length === 0 ? (
-                    <div className="p-12 text-center opacity-20">
-                      <p className="text-[10px] uppercase tracking-widest">কোনো সক্রিয় সেশন নেই</p>
-                    </div>
-                  ) : (
-                    (Object.values(adminData.active) as ChatSession[]).map((chat) => (
-                      <button
-                        key={chat.roomId}
-                        onClick={() => setSelectedAdminChat(chat.roomId)}
-                        className={`w-full p-5 text-left rounded-2xl transition-all ${
-                          selectedAdminChat === chat.roomId ? 'glass bg-primary/10' : 'hover:bg-white/5'
-                        }`}
-                      >
-                        <p className="text-[10px] font-mono mb-2 opacity-50">{chat.roomId}</p>
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] uppercase tracking-widest font-bold text-muted">
-                            {chat.messages.length} মেসেজ
-                          </span>
-                        </div>
-                      </button>
-                    ))
-                  )
-                ) : (
-                  adminData.history.length === 0 ? (
-                    <div className="p-12 text-center opacity-20">
-                      <p className="text-[10px] uppercase tracking-widest">কোনো ইতিহাস নেই</p>
-                    </div>
-                  ) : (
-                    adminData.history.map((chat) => (
-                      <button
-                        key={chat.roomId + Math.random()}
-                        onClick={() => setSelectedAdminChat(chat.roomId)}
-                        className={`w-full p-5 text-left rounded-2xl transition-all ${
-                          selectedAdminChat === chat.roomId ? 'glass bg-primary/10' : 'hover:bg-white/5'
-                        }`}
-                      >
-                        <p className="text-[10px] font-mono mb-2 opacity-50">{chat.roomId}</p>
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] uppercase tracking-widest font-bold text-muted">
-                            {chat.messages.length} মেসেজ (শেষ)
-                          </span>
-                        </div>
-                      </button>
-                    ))
-                  )
-                )}
-              </div>
-            </aside>
-
-            <main className="flex-1 flex flex-col relative">
-              {(() => {
-                let chat: ChatSession | undefined;
-                if (selectedAdminChat?.includes('_hist_')) {
-                  const idx = parseInt(selectedAdminChat.split('_hist_')[1]);
-                  chat = adminData.history[idx];
-                } else if (selectedAdminChat) {
-                  chat = adminData.active[selectedAdminChat];
-                }
-
-                if (chat) {
-                  return (
-                    <>
-                      <header className="p-8 glass border-b border-white/5">
-                        <h3 className="font-serif italic text-xl opacity-50">
-                          {selectedAdminChat?.includes('_hist_') ? 'ইতিহাস: ' : 'পর্যবেক্ষণ: '} {chat.roomId}
-                        </h3>
-                      </header>
-                      <div className="flex-1 overflow-y-auto p-8 space-y-8">
-                        {chat.messages.map((msg) => (
-                          <div key={msg.id} className="space-y-2">
-                            <div className="flex items-center gap-3">
-                              <span className="text-[9px] font-mono px-2 py-1 glass rounded text-muted">USER_{msg.sender.slice(0, 4)}</span>
-                              <span className="text-[8px] font-mono opacity-20">{new Date(msg.timestamp).toLocaleTimeString()}</span>
-                            </div>
-                            <div className="glass p-5 rounded-2xl max-w-2xl">
-                              <p className="text-sm leading-relaxed">{msg.text}</p>
-                            </div>
-                          </div>
-                        ))}
-                        <div ref={messagesEndRef} />
-                      </div>
-                    </>
-                  );
-                }
-                return (
-                  <div className="flex-1 flex flex-col items-center justify-center opacity-10">
-                    <Shield size={80} strokeWidth={1} />
-                    <p className="mt-6 text-[10px] uppercase tracking-[0.4em]">নিরাপদ পর্যবেক্ষণ সক্রিয়</p>
-                  </div>
-                );
-              })()}
-            </main>
           </motion.div>
         )}
       </AnimatePresence>
