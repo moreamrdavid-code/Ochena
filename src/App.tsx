@@ -134,33 +134,34 @@ export default function App() {
     // Try to find someone in the queue
     const tryMatch = async () => {
       try {
-        const queueQuery = query(
-          collection(db, 'queue'),
-          orderBy('timestamp', 'asc'),
-          limit(10)
-        );
-        const queueSnap = await getDocs(queueQuery);
+        console.log("Matching attempt for:", user.uid);
+        const queueSnap = await getDocs(collection(db, 'queue'));
         const others = queueSnap.docs.filter(d => d.id !== user.uid);
         
         if (others.length > 0) {
-          const partner = others[0].data();
-          const newRoomId = `room_${Math.random().toString(36).substring(7)}`;
+          // Sort by timestamp if available, otherwise just take the first
+          const partnerDoc = others[0];
+          const partnerUid = partnerDoc.id;
           
-          // Use a transaction or a specific check to avoid double matching
-          // For simplicity in this anonymous app, we'll just try to create the chat
-          // and the first one to succeed wins.
-          
-          await setDoc(doc(db, 'chats', newRoomId), {
-            roomId: newRoomId,
-            users: [user.uid, partner.uid],
-            messages: [],
-            status: 'active',
-            createdAt: serverTimestamp()
-          });
+          // Only the user with the "smaller" UID initiates the chat to avoid double rooms
+          if (user.uid < partnerUid) {
+            console.log("Initiating chat with:", partnerUid);
+            const newRoomId = `room_${user.uid.substring(6)}_${partnerUid.substring(6)}`;
+            
+            await setDoc(doc(db, 'chats', newRoomId), {
+              roomId: newRoomId,
+              users: [user.uid, partnerUid],
+              messages: [],
+              status: 'active',
+              createdAt: serverTimestamp()
+            });
 
-          // Cleanup Queue
-          await deleteDoc(doc(db, 'queue', user.uid));
-          await deleteDoc(doc(db, 'queue', partner.uid));
+            // Cleanup Queue for both
+            await deleteDoc(doc(db, 'queue', user.uid));
+            await deleteDoc(doc(db, 'queue', partnerUid));
+          } else {
+            console.log("Waiting for partner to initiate...");
+          }
         }
       } catch (e) {
         console.error("Matching error:", e);
