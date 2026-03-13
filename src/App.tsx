@@ -110,44 +110,45 @@ export default function App() {
   useEffect(() => {
     if (!user || view !== 'matching') return;
 
-    // Listen for chats I'm invited to - simplified query
-    const q = query(
+    console.log("Real-time matching active for:", user.uid);
+
+    // 1. Listen for chats I'm invited to
+    const chatQuery = query(
       collection(db, 'chats'),
       where('users', 'array-contains', user.uid),
       limit(1)
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribeChat = onSnapshot(chatQuery, (snapshot) => {
       if (!snapshot.empty) {
         const chatDoc = snapshot.docs[0];
         const data = chatDoc.data() as ChatSession;
         if (data.status === 'active') {
+          console.log("Joined chat room:", chatDoc.id);
           setRoomId(chatDoc.id);
           setMessages(data.messages || []);
           setView('chat');
-          // Remove from queue
-          deleteDoc(doc(db, 'queue', user.uid)).catch(console.error);
+          // Cleanup my queue entry
+          deleteDoc(doc(db, 'queue', user.uid)).catch(() => {});
         }
       }
-    }, (err) => console.error("Chat listener error:", err));
+    });
 
-    // Try to find someone in the queue
-    const tryMatch = async () => {
-      try {
-        console.log("Matching attempt for:", user.uid);
-        const queueSnap = await getDocs(collection(db, 'queue'));
-        const others = queueSnap.docs.filter(d => d.id !== user.uid);
+    // 2. Listen to the queue to find others
+    const queueQuery = query(collection(db, 'queue'), limit(10));
+    const unsubscribeQueue = onSnapshot(queueQuery, async (snapshot) => {
+      const others = snapshot.docs.filter(d => d.id !== user.uid);
+      
+      if (others.length > 0) {
+        const partnerDoc = others[0];
+        const partnerUid = partnerDoc.id;
         
-        if (others.length > 0) {
-          // Sort by timestamp if available, otherwise just take the first
-          const partnerDoc = others[0];
-          const partnerUid = partnerDoc.id;
+        // Stable tie-breaker: only the "smaller" UID creates the room
+        if (user.uid < partnerUid) {
+          console.log("Found partner, creating room with:", partnerUid);
+          const newRoomId = `room_${user.uid.substring(6)}_${partnerUid.substring(6)}`;
           
-          // Only the user with the "smaller" UID initiates the chat to avoid double rooms
-          if (user.uid < partnerUid) {
-            console.log("Initiating chat with:", partnerUid);
-            const newRoomId = `room_${user.uid.substring(6)}_${partnerUid.substring(6)}`;
-            
+          try {
             await setDoc(doc(db, 'chats', newRoomId), {
               roomId: newRoomId,
               users: [user.uid, partnerUid],
@@ -155,23 +156,17 @@ export default function App() {
               status: 'active',
               createdAt: serverTimestamp()
             });
-
-            // Cleanup Queue for both
-            await deleteDoc(doc(db, 'queue', user.uid));
-            await deleteDoc(doc(db, 'queue', partnerUid));
-          } else {
-            console.log("Waiting for partner to initiate...");
+            // Queue cleanup happens via the chat listener or after creation
+          } catch (e) {
+            console.error("Room creation failed:", e);
           }
         }
-      } catch (e) {
-        console.error("Matching error:", e);
       }
-    };
+    });
 
-    const matchInterval = setInterval(tryMatch, 3000);
     return () => {
-      unsubscribe();
-      clearInterval(matchInterval);
+      unsubscribeChat();
+      unsubscribeQueue();
     };
   }, [user, view]);
 
