@@ -53,11 +53,11 @@ export default function App() {
         setUser({ uid: u.uid, isGuest: false });
         setIsAuthLoading(false);
       } else {
-        // Check for existing guest ID in localStorage
-        let guestId = localStorage.getItem('chat_guest_id');
+        // Use sessionStorage instead of localStorage for easier testing in multiple tabs
+        let guestId = sessionStorage.getItem('chat_guest_id');
         if (!guestId) {
           guestId = 'guest_' + Math.random().toString(36).substring(2, 15);
-          localStorage.setItem('chat_guest_id', guestId);
+          sessionStorage.setItem('chat_guest_id', guestId);
         }
         setUser({ uid: guestId, isGuest: true });
         setIsAuthLoading(false);
@@ -81,19 +81,14 @@ export default function App() {
     heartbeat();
     const interval = setInterval(heartbeat, 30000); // Every 30s
 
-    // Listen to online count - only count users active in the last 2 minutes
-    const twoMinutesAgo = new Date(Date.now() - 120000);
-    const q = query(
-      collection(db, 'online_users'),
-      where('lastActive', '>=', twoMinutesAgo)
-    );
+    // Listen to online count - simplified to avoid index errors
+    const q = query(collection(db, 'online_users'), limit(100));
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      // If count is 0, show at least 1 (the current user)
       setOnlineCount(snapshot.size || 1);
     }, (err) => {
       console.error("Online count error:", err);
-      // Fallback to simple count if query fails due to missing index
-      const simpleQ = query(collection(db, 'online_users'));
-      onSnapshot(simpleQ, (s) => setOnlineCount(s.size));
+      setOnlineCount(1);
     });
 
     return () => {
@@ -115,11 +110,10 @@ export default function App() {
   useEffect(() => {
     if (!user || view !== 'matching') return;
 
-    // Listen for chats I'm invited to
+    // Listen for chats I'm invited to - simplified query
     const q = query(
       collection(db, 'chats'),
       where('users', 'array-contains', user.uid),
-      where('status', '==', 'active'),
       limit(1)
     );
 
@@ -127,11 +121,13 @@ export default function App() {
       if (!snapshot.empty) {
         const chatDoc = snapshot.docs[0];
         const data = chatDoc.data() as ChatSession;
-        setRoomId(chatDoc.id);
-        setMessages(data.messages || []);
-        setView('chat');
-        // Remove from queue
-        deleteDoc(doc(db, 'queue', user.uid)).catch(console.error);
+        if (data.status === 'active') {
+          setRoomId(chatDoc.id);
+          setMessages(data.messages || []);
+          setView('chat');
+          // Remove from queue
+          deleteDoc(doc(db, 'queue', user.uid)).catch(console.error);
+        }
       }
     }, (err) => console.error("Chat listener error:", err));
 
