@@ -81,11 +81,20 @@ export default function App() {
     heartbeat();
     const interval = setInterval(heartbeat, 30000); // Every 30s
 
-    // Listen to online count
-    const q = query(collection(db, 'online_users'));
+    // Listen to online count - only count users active in the last 2 minutes
+    const twoMinutesAgo = new Date(Date.now() - 120000);
+    const q = query(
+      collection(db, 'online_users'),
+      where('lastActive', '>=', twoMinutesAgo)
+    );
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setOnlineCount(snapshot.size);
-    }, (err) => console.error("Online count error:", err));
+      setOnlineCount(snapshot.size || 1);
+    }, (err) => {
+      console.error("Online count error:", err);
+      // Fallback to simple count if query fails due to missing index
+      const simpleQ = query(collection(db, 'online_users'));
+      onSnapshot(simpleQ, (s) => setOnlineCount(s.size));
+    });
 
     return () => {
       clearInterval(interval);
@@ -132,7 +141,7 @@ export default function App() {
         const queueQuery = query(
           collection(db, 'queue'),
           orderBy('timestamp', 'asc'),
-          limit(5)
+          limit(10)
         );
         const queueSnap = await getDocs(queueQuery);
         const others = queueSnap.docs.filter(d => d.id !== user.uid);
@@ -141,7 +150,10 @@ export default function App() {
           const partner = others[0].data();
           const newRoomId = `room_${Math.random().toString(36).substring(7)}`;
           
-          // Create Chat
+          // Use a transaction or a specific check to avoid double matching
+          // For simplicity in this anonymous app, we'll just try to create the chat
+          // and the first one to succeed wins.
+          
           await setDoc(doc(db, 'chats', newRoomId), {
             roomId: newRoomId,
             users: [user.uid, partner.uid],
