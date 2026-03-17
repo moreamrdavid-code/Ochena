@@ -1,31 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageCircle, Shield, Users, Send, LogOut, Loader2, Lock, ChevronRight, Hash, Sun, Moon, User as UserIcon } from 'lucide-react';
+import { MessageCircle, Users, Send, LogOut, Hash, Sun, Moon, ChevronRight, User as UserIcon, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  auth, db, loginWithGoogle, onAuthStateChanged,
-  collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, limit, serverTimestamp, arrayUnion
-} from './firebase';
+import { supabase } from './supabase';
 
-type View = 'home' | 'gender_select' | 'matching' | 'chat' | 'admin_login' | 'admin_panel';
-type Gender = 'male' | 'female';
+type View = 'home' | 'matching' | 'chat' | 'admin_login';
 
 interface Message {
   id: string;
-  sender: string;
+  chat_id: string;
+  sender_id: string;
   text: string;
-  timestamp: string;
+  created_at: string;
 }
 
 interface ChatSession {
-  roomId: string;
+  id: string;
   users: string[];
-  messages: Message[];
   status: 'active' | 'ended';
+  created_at: string;
 }
 
 export default function App() {
-  const [user, setUser] = useState<{ uid: string; isGuest: boolean } | null>(null);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [userId, setUserId] = useState<string | null>(null);
   const [view, setView] = useState<View>('home');
   const [onlineCount, setOnlineCount] = useState(0);
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -34,169 +30,209 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Auth Listener
+  // Initialize Anonymous User
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (u) {
-        setUser({ uid: u.uid, isGuest: false });
-        setIsAuthLoading(false);
-      } else {
-        let guestId = sessionStorage.getItem('chat_guest_id');
-        if (!guestId) {
-          guestId = 'guest_' + Math.random().toString(36).substring(2, 15);
-          sessionStorage.setItem('chat_guest_id', guestId);
-        }
-        setUser({ uid: guestId, isGuest: true });
-        setIsAuthLoading(false);
-      }
-    });
-    return () => unsubscribe();
+    let guestId = sessionStorage.getItem('chat_guest_id');
+    if (!guestId) {
+      guestId = 'guest_' + Math.random().toString(36).substring(2, 15);
+      sessionStorage.setItem('chat_guest_id', guestId);
+    }
+    setUserId(guestId);
   }, []);
 
-  // Online Count & Heartbeat (Vercel Friendly)
+  // Presence & Online Count
   useEffect(() => {
-    if (!user) return;
-    const heartbeat = () => {
-      setDoc(doc(db, 'online_users', user.uid), { lastActive: serverTimestamp() }).catch(() => {});
-    };
-    heartbeat();
-    const interval = setInterval(heartbeat, 30000);
-    const q = query(collection(db, 'online_users'), limit(100));
-    const unsubscribe = onSnapshot(q, (snap) => setOnlineCount(snap.size || 1));
-    return () => {
-      clearInterval(interval);
-      unsubscribe();
-    };
-  }, [user]);
+    if (!userId) return;
 
-  // Matching & Chat Listener (Deterministic Handshake)
-  useEffect(() => {
-    if (!user || view !== 'matching') return;
-
-    // 1. Listen for active rooms where I am a participant
-    const chatQuery = query(
-      collection(db, 'chats'),
-      where('users', 'array-contains', user.uid),
-      where('status', '==', 'active'),
-      limit(1)
-    );
-
-    const unsubscribeChat = onSnapshot(chatQuery, (snapshot) => {
-      if (!snapshot.empty) {
-        const chatDoc = snapshot.docs[0];
-        setRoomId(chatDoc.id);
-        setView('chat');
-        // Cleanup queue immediately
-        deleteDoc(doc(db, 'queue', user.uid)).catch(() => {});
-      }
+    const channel = supabase.channel('online-users', {
+      config: {
+        presence: {
+          key: userId,
+        },
+      },
     });
 
-    // 2. Simplified Matching Logic
-    const queueQuery = query(collection(db, 'queue'), limit(10));
-    const unsubscribeQueue = onSnapshot(queueQuery, async (snapshot) => {
-      const others = snapshot.docs.filter(d => d.id !== user.uid);
-      if (others.length > 0) {
-        const partnerUid = others[0].id;
-        // Generate a consistent room ID for this pair
-        const sortedIds = [user.uid, partnerUid].sort();
-        const newRoomId = `room_${sortedIds[0].substring(0, 10)}_${sortedIds[1].substring(0, 10)}`;
-        
-        try {
-          // Both users attempt to create/join the same room. 
-          // Firestore merge: true ensures it doesn't overwrite messages if already created.
-          await setDoc(doc(db, 'chats', newRoomId), {
-            roomId: newRoomId,
-            users: [user.uid, partnerUid],
-            messages: [],
-            status: 'active',
-            createdAt: serverTimestamp()
-          }, { merge: true });
-        } catch (e) {
-          console.error("Match error:", e);
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        setOnlineCount(Object.keys(state).length);
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({ online_at: new Date().toISOString() });
         }
-      }
-    });
+      });
 
     return () => {
-      unsubscribeChat();
-      unsubscribeQueue();
+      channel.unsubscribe();
     };
-  }, [user, view]);
+  }, [userId]);
 
-  // Active Chat Listener
+  // Matching Logic
   useEffect(() => {
-    if (!user || !roomId || view !== 'chat') return;
-    const unsubscribe = onSnapshot(doc(db, 'chats', roomId), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data() as ChatSession;
-        if (data.status === 'ended') {
-          setView('home');
-          setRoomId(null);
-        } else {
-          setMessages(data.messages || []);
+    if (!userId || view !== 'matching') return;
+
+    // 1. Listen for chats I'm part of
+    const chatChannel = supabase
+      .channel('chat-matching')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'chats',
+          filter: `users=cs.{${userId}}`,
+        },
+        (payload) => {
+          const newChat = payload.new as ChatSession;
+          if (newChat.status === 'active') {
+            setRoomId(newChat.id);
+            setView('chat');
+            // Remove from queue
+            supabase.from('queue').delete().eq('id', userId).then();
+          }
+        }
+      )
+      .subscribe();
+
+    // 2. Look for others in queue and try to pair
+    const findMatch = async () => {
+      const { data: queueData } = await supabase
+        .from('queue')
+        .select('id')
+        .neq('id', userId)
+        .limit(1);
+
+      if (queueData && queueData.length > 0) {
+        const partnerId = queueData[0].id;
+        const sortedIds = [userId, partnerId].sort();
+        const newRoomId = `room_${sortedIds[0].substring(0, 8)}_${sortedIds[1].substring(0, 8)}`;
+
+        // Attempt to create room
+        const { error } = await supabase.from('chats').insert({
+          id: newRoomId,
+          users: sortedIds,
+          status: 'active'
+        });
+
+        // If successful or if it already exists (someone else created it)
+        if (!error || error.code === '23505') { // 23505 is unique violation
+          setRoomId(newRoomId);
+          setView('chat');
+          supabase.from('queue').delete().eq('id', userId).then();
         }
       }
-    });
-    return () => unsubscribe();
-  }, [user, roomId, view]);
+    };
 
-  // Theme & Scroll
+    // Initial check and then listen to queue changes
+    findMatch();
+    const queueChannel = supabase
+      .channel('queue-changes')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'queue' },
+        () => findMatch()
+      )
+      .subscribe();
+
+    return () => {
+      chatChannel.unsubscribe();
+      queueChannel.unsubscribe();
+    };
+  }, [userId, view]);
+
+  // Chat Messages Listener
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
+    if (!roomId || view !== 'chat') return;
 
+    // Fetch existing messages
+    supabase
+      .from('messages')
+      .select('*')
+      .eq('chat_id', roomId)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => {
+        if (data) setMessages(data);
+      });
+
+    // Listen for new messages
+    const msgChannel = supabase
+      .channel(`room-${roomId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `chat_id=eq.${roomId}`,
+        },
+        (payload) => {
+          setMessages((prev) => [...prev, payload.new as Message]);
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'chats',
+          filter: `id=eq.${roomId}`,
+        },
+        (payload) => {
+          if (payload.new.status === 'ended') {
+            setView('home');
+            setRoomId(null);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      msgChannel.unsubscribe();
+    };
+  }, [roomId, view]);
+
+  // Auto Scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Theme Sync
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
   const handleStartMatching = async () => {
-    if (!user) return;
+    if (!userId) return;
     setView('matching');
-    await setDoc(doc(db, 'queue', user.uid), { uid: user.uid, timestamp: serverTimestamp() });
+    await supabase.from('queue').insert({ id: userId });
+  };
+
+  const handleCancelMatching = async () => {
+    if (userId) {
+      await supabase.from('queue').delete().eq('id', userId);
+      setView('home');
+    }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (user && roomId && inputText.trim()) {
-      const msg: Message = {
-        id: Math.random().toString(36).substring(7),
-        sender: user.uid,
-        text: inputText,
-        timestamp: new Date().toISOString()
-      };
-      await updateDoc(doc(db, 'chats', roomId), { messages: arrayUnion(msg) });
+    if (userId && roomId && inputText.trim()) {
+      const text = inputText.trim();
       setInputText('');
+      await supabase.from('messages').insert({
+        chat_id: roomId,
+        sender_id: userId,
+        text: text
+      });
     }
   };
 
   const handleLeaveChat = async () => {
     if (roomId) {
-      await updateDoc(doc(db, 'chats', roomId), { status: 'ended' });
+      await supabase.from('chats').update({ status: 'ended' }).eq('id', roomId);
       setView('home');
       setRoomId(null);
-    }
-  };
-
-  const handleCancelMatching = async () => {
-    if (user) {
-      await deleteDoc(doc(db, 'queue', user.uid));
-      setView('home');
-    }
-  };
-
-  const handleAdminLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const result = await loginWithGoogle();
-      if (result.user.email === "ridoymostofa.1@gmail.com") {
-        setView('admin_panel');
-      } else {
-        alert('আপনি অ্যাডমিন নন।');
-        await auth.signOut();
-      }
-    } catch (error) {
-      console.error(error);
-      alert('লগইন ব্যর্থ হয়েছে।');
     }
   };
 
@@ -229,7 +265,7 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="relative flex flex-col items-center justify-center min-h-screen p-6"
           >
-            <div className="w-full max-w-lg space-y-12 text-center">
+            <div className="w-full max-lg space-y-12 text-center">
               <div className="space-y-4">
                 <motion.h1 
                   initial={{ y: 20, opacity: 0 }}
@@ -257,11 +293,10 @@ export default function App() {
               >
                 <button
                   onClick={handleStartMatching}
-                  disabled={isAuthLoading}
-                  className="btn-vibrant px-12 py-6 text-white rounded-full text-2xl font-bold uppercase tracking-tighter shadow-2xl disabled:opacity-50"
+                  className="btn-vibrant px-12 py-6 text-white rounded-full text-2xl font-bold uppercase tracking-tighter shadow-2xl"
                 >
                   <span className="relative z-10 flex items-center gap-3">
-                    {isAuthLoading ? "অপেক্ষা করুন..." : "চ্যাট শুরু করুন"} <ChevronRight size={28} />
+                    চ্যাট শুরু করুন <ChevronRight size={28} />
                   </span>
                 </button>
 
@@ -278,16 +313,6 @@ export default function App() {
               <div className="absolute bottom-14 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-[0.2em] text-muted/50 font-medium whitespace-nowrap">
                 This app made by "The Daily ICD"
               </div>
-
-              <motion.button
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.3 }}
-                whileHover={{ opacity: 1 }}
-                onClick={() => setView('admin_login')}
-                className="absolute bottom-8 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-[0.3em] font-bold"
-              >
-                অ্যাডমিন প্যানেল
-              </motion.button>
             </div>
           </motion.div>
         )}
@@ -358,20 +383,20 @@ export default function App() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   key={msg.id}
-                  className={`flex ${msg.sender === user?.uid ? 'justify-end' : 'justify-start'}`}
+                  className={`flex ${msg.sender_id === userId ? 'justify-end' : 'justify-start'}`}
                 >
                   <div className="max-w-[85%] md:max-w-[70%] space-y-1">
                     <div
                       className={`px-5 py-4 rounded-3xl text-sm leading-relaxed ${
-                        msg.sender === user?.uid
+                        msg.sender_id === userId
                           ? 'chat-bubble-user text-white rounded-tr-none shadow-lg'
                           : 'chat-bubble-partner text-accent rounded-tl-none'
                       }`}
                     >
                       {msg.text}
                     </div>
-                    <p className={`text-[9px] font-mono opacity-30 ${msg.sender === user?.uid ? 'text-right' : 'text-left'}`}>
-                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    <p className={`text-[9px] font-mono opacity-30 ${msg.sender_id === userId ? 'text-right' : 'text-left'}`}>
+                      {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </div>
                 </motion.div>
@@ -386,55 +411,19 @@ export default function App() {
                     type="text"
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
-                    placeholder="কিছু বলুন..."
-                    className="w-full glass rounded-2xl py-4 px-6 focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all text-sm md:text-base"
+                    placeholder="আপনার মেসেজ লিখুন..."
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
                   />
+                  <button
+                    type="submit"
+                    disabled={!inputText.trim()}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-primary hover:scale-110 transition-transform disabled:opacity-50"
+                  >
+                    <Send size={20} />
+                  </button>
                 </div>
-                <button
-                  type="submit"
-                  disabled={!inputText.trim()}
-                  className="h-[52px] w-[52px] md:h-[60px] md:w-[60px] btn-vibrant text-white rounded-2xl flex items-center justify-center disabled:opacity-20 transition-all active:scale-95 shadow-lg shadow-primary/20 shrink-0"
-                >
-                  <Send size={24} className="md:w-7 md:h-7" />
-                </button>
               </div>
             </form>
-          </motion.div>
-        )}
-
-        {view === 'admin_login' && (
-          <motion.div
-            key="admin_login"
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            className="flex flex-col items-center justify-center min-h-screen p-6"
-          >
-            <div className="w-full max-w-xs space-y-12 text-center">
-              <div className="space-y-4">
-                <div className="w-16 h-16 glass rounded-3xl flex items-center justify-center mx-auto">
-                  <Lock size={24} className="opacity-50" />
-                </div>
-                <h2 className="text-2xl font-serif italic">অ্যাডমিন লগইন</h2>
-                <p className="text-xs text-muted">গুগল দিয়ে লগইন করুন</p>
-              </div>
-              
-              <div className="space-y-4">
-                <button
-                  onClick={handleAdminLogin}
-                  className="w-full py-4 btn-vibrant text-white rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center gap-2"
-                >
-                  গুগল দিয়ে প্রবেশ করুন
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setView('home')}
-                  className="text-[10px] uppercase tracking-widest opacity-30 hover:opacity-100 transition-opacity"
-                >
-                  হোমে ফিরে যান
-                </button>
-              </div>
-            </div>
           </motion.div>
         )}
       </AnimatePresence>
