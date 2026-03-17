@@ -210,17 +210,27 @@ export default function App() {
         .on(
           'postgres_changes',
           {
-            event: '*', // Listen for all changes (INSERT, UPDATE)
+            event: '*', 
             schema: 'public',
             table: 'messages',
-            filter: `chat_id=eq.${roomId}`,
           },
           (payload) => {
+            const newMsg = payload.new as Message;
+            if (newMsg.chat_id !== roomId) return;
+
             if (payload.eventType === 'INSERT') {
-              setMessages((prev) => [...prev, payload.new as Message]);
+              setMessages((prev) => {
+                // Remove optimistic message if it exists
+                const filtered = prev.filter(m => 
+                  !(m.id.startsWith('temp_') && m.text === newMsg.text && m.sender_id === newMsg.sender_id)
+                );
+                // Prevent duplicate real messages
+                if (filtered.some(m => m.id === newMsg.id)) return filtered;
+                return [...filtered, newMsg];
+              });
             } else if (payload.eventType === 'UPDATE') {
               setMessages((prev) => 
-                prev.map((msg) => msg.id === payload.new.id ? { ...msg, ...payload.new } : msg)
+                prev.map((msg) => msg.id === newMsg.id ? { ...msg, ...newMsg } : msg)
               );
             }
           }
@@ -327,17 +337,38 @@ export default function App() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (userId && roomId && inputText.trim()) {
+      const text = inputText.trim();
+      const tempId = 'temp_' + Date.now();
+      
+      // Optimistic update
+      const optimisticMsg: Message = {
+        id: tempId,
+        chat_id: roomId,
+        sender_id: userId,
+        text: text,
+        created_at: new Date().toISOString(),
+        reactions: {}
+      };
+      
+      setMessages(prev => [...prev, optimisticMsg]);
+      setInputText('');
+
       try {
         const supabase = getSupabase();
-        const text = inputText.trim();
-        setInputText('');
-        await supabase.from('messages').insert({
+        const { error } = await supabase.from('messages').insert({
           chat_id: roomId,
           sender_id: userId,
           text: text,
           reactions: {}
         });
+        
+        if (error) {
+          // Rollback on error
+          setMessages(prev => prev.filter(m => m.id !== tempId));
+          console.error("Send error:", error);
+        }
       } catch (err: any) {
+        setMessages(prev => prev.filter(m => m.id !== tempId));
         if (err.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
       }
     }
