@@ -441,9 +441,9 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="flex flex-col h-screen max-w-4xl mx-auto w-full border-x border-white/5"
+            className="fixed inset-0 flex flex-col max-w-4xl mx-auto w-full border-x border-white/5 bg-bg"
           >
-            <header className="flex items-center justify-between p-6 glass border-b border-white/5 sticky top-0 z-20">
+            <header className="flex-none flex items-center justify-between p-4 md:p-6 glass border-b border-white/5 z-20">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-full glass flex items-center justify-center">
                   <Hash size={18} className="opacity-50" />
@@ -461,7 +461,7 @@ export default function App() {
               </button>
             </header>
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-8 scrollbar-hide">
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 md:space-y-8 scrollbar-hide">
               {messages.map((msg) => (
                 <motion.div
                   initial={{ opacity: 0, y: 10 }}
@@ -471,7 +471,7 @@ export default function App() {
                 >
                   <div className="max-w-[85%] md:max-w-[70%] space-y-1">
                     <div
-                      className={`px-5 py-4 rounded-3xl text-sm leading-relaxed ${
+                      className={`px-4 py-3 md:px-5 md:py-4 rounded-2xl md:rounded-3xl text-sm leading-relaxed ${
                         msg.sender_id === userId
                           ? 'chat-bubble-user text-white rounded-tr-none shadow-lg'
                           : 'chat-bubble-partner text-accent rounded-tl-none'
@@ -488,7 +488,7 @@ export default function App() {
               <div ref={messagesEndRef} />
             </div>
 
-            <form onSubmit={handleSendMessage} className="p-4 md:p-6 border-t border-white/5 bg-bg/50 backdrop-blur-xl sticky bottom-0 z-20">
+            <form onSubmit={handleSendMessage} className="flex-none p-4 md:p-6 border-t border-white/5 bg-bg/80 backdrop-blur-xl">
               <div className="flex items-center gap-3 max-w-4xl mx-auto">
                 <div className="relative flex-1">
                   <input
@@ -496,7 +496,7 @@ export default function App() {
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     placeholder="আপনার মেসেজ লিখুন..."
-                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3 md:px-6 md:py-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
                   />
                   <button
                     type="submit"
