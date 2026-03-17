@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, Users, Send, LogOut, Hash, Sun, Moon, ChevronRight, User as UserIcon, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { supabase } from './supabase';
+import { getSupabase } from './supabase';
 
 type View = 'home' | 'matching' | 'chat' | 'admin_login';
 
@@ -28,6 +28,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [configError, setConfigError] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Initialize Anonymous User
@@ -44,152 +45,167 @@ export default function App() {
   useEffect(() => {
     if (!userId) return;
 
-    const channel = supabase.channel('online-users', {
-      config: {
-        presence: {
-          key: userId,
+    try {
+      const supabase = getSupabase();
+      const channel = supabase.channel('online-users', {
+        config: {
+          presence: {
+            key: userId,
+          },
         },
-      },
-    });
-
-    channel
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        setOnlineCount(Object.keys(state).length);
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await channel.track({ online_at: new Date().toISOString() });
-        }
       });
 
-    return () => {
-      channel.unsubscribe();
-    };
+      channel
+        .on('presence', { event: 'sync' }, () => {
+          const state = channel.presenceState();
+          setOnlineCount(Object.keys(state).length);
+        })
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await channel.track({ online_at: new Date().toISOString() });
+          }
+        });
+
+      return () => {
+        channel.unsubscribe();
+      };
+    } catch (e: any) {
+      if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+    }
   }, [userId]);
 
   // Matching Logic
   useEffect(() => {
     if (!userId || view !== 'matching') return;
 
-    // 1. Listen for chats I'm part of
-    const chatChannel = supabase
-      .channel('chat-matching')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'chats',
-          filter: `users=cs.{${userId}}`,
-        },
-        (payload) => {
-          const newChat = payload.new as ChatSession;
-          if (newChat.status === 'active') {
-            setRoomId(newChat.id);
+    try {
+      const supabase = getSupabase();
+      // 1. Listen for chats I'm part of
+      const chatChannel = supabase
+        .channel('chat-matching')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'chats',
+            filter: `users=cs.{${userId}}`,
+          },
+          (payload) => {
+            const newChat = payload.new as ChatSession;
+            if (newChat.status === 'active') {
+              setRoomId(newChat.id);
+              setView('chat');
+              // Remove from queue
+              supabase.from('queue').delete().eq('id', userId).then();
+            }
+          }
+        )
+        .subscribe();
+
+      // 2. Look for others in queue and try to pair
+      const findMatch = async () => {
+        const { data: queueData } = await supabase
+          .from('queue')
+          .select('id')
+          .neq('id', userId)
+          .limit(1);
+
+        if (queueData && queueData.length > 0) {
+          const partnerId = queueData[0].id;
+          const sortedIds = [userId, partnerId].sort();
+          const newRoomId = `room_${sortedIds[0].substring(0, 8)}_${sortedIds[1].substring(0, 8)}`;
+
+          // Attempt to create room
+          const { error } = await supabase.from('chats').insert({
+            id: newRoomId,
+            users: sortedIds,
+            status: 'active'
+          });
+
+          // If successful or if it already exists (someone else created it)
+          if (!error || error.code === '23505') { // 23505 is unique violation
+            setRoomId(newRoomId);
             setView('chat');
-            // Remove from queue
             supabase.from('queue').delete().eq('id', userId).then();
           }
         }
-      )
-      .subscribe();
+      };
 
-    // 2. Look for others in queue and try to pair
-    const findMatch = async () => {
-      const { data: queueData } = await supabase
-        .from('queue')
-        .select('id')
-        .neq('id', userId)
-        .limit(1);
+      // Initial check and then listen to queue changes
+      findMatch();
+      const queueChannel = supabase
+        .channel('queue-changes')
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'queue' },
+          () => findMatch()
+        )
+        .subscribe();
 
-      if (queueData && queueData.length > 0) {
-        const partnerId = queueData[0].id;
-        const sortedIds = [userId, partnerId].sort();
-        const newRoomId = `room_${sortedIds[0].substring(0, 8)}_${sortedIds[1].substring(0, 8)}`;
-
-        // Attempt to create room
-        const { error } = await supabase.from('chats').insert({
-          id: newRoomId,
-          users: sortedIds,
-          status: 'active'
-        });
-
-        // If successful or if it already exists (someone else created it)
-        if (!error || error.code === '23505') { // 23505 is unique violation
-          setRoomId(newRoomId);
-          setView('chat');
-          supabase.from('queue').delete().eq('id', userId).then();
-        }
-      }
-    };
-
-    // Initial check and then listen to queue changes
-    findMatch();
-    const queueChannel = supabase
-      .channel('queue-changes')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'queue' },
-        () => findMatch()
-      )
-      .subscribe();
-
-    return () => {
-      chatChannel.unsubscribe();
-      queueChannel.unsubscribe();
-    };
+      return () => {
+        chatChannel.unsubscribe();
+        queueChannel.unsubscribe();
+      };
+    } catch (e: any) {
+      if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+    }
   }, [userId, view]);
 
   // Chat Messages Listener
   useEffect(() => {
     if (!roomId || view !== 'chat') return;
 
-    // Fetch existing messages
-    supabase
-      .from('messages')
-      .select('*')
-      .eq('chat_id', roomId)
-      .order('created_at', { ascending: true })
-      .then(({ data }) => {
-        if (data) setMessages(data);
-      });
+    try {
+      const supabase = getSupabase();
+      // Fetch existing messages
+      supabase
+        .from('messages')
+        .select('*')
+        .eq('chat_id', roomId)
+        .order('created_at', { ascending: true })
+        .then(({ data }) => {
+          if (data) setMessages(data);
+        });
 
-    // Listen for new messages
-    const msgChannel = supabase
-      .channel(`room-${roomId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `chat_id=eq.${roomId}`,
-        },
-        (payload) => {
-          setMessages((prev) => [...prev, payload.new as Message]);
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'chats',
-          filter: `id=eq.${roomId}`,
-        },
-        (payload) => {
-          if (payload.new.status === 'ended') {
-            setView('home');
-            setRoomId(null);
+      // Listen for new messages
+      const msgChannel = supabase
+        .channel(`room-${roomId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'messages',
+            filter: `chat_id=eq.${roomId}`,
+          },
+          (payload) => {
+            setMessages((prev) => [...prev, payload.new as Message]);
           }
-        }
-      )
-      .subscribe();
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'chats',
+            filter: `id=eq.${roomId}`,
+          },
+          (payload) => {
+            if (payload.new.status === 'ended') {
+              setView('home');
+              setRoomId(null);
+            }
+          }
+        )
+        .subscribe();
 
-    return () => {
-      msgChannel.unsubscribe();
-    };
+      return () => {
+        msgChannel.unsubscribe();
+      };
+    } catch (e: any) {
+      if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+    }
   }, [roomId, view]);
 
   // Auto Scroll
@@ -204,41 +220,83 @@ export default function App() {
 
   const handleStartMatching = async () => {
     if (!userId) return;
-    setView('matching');
-    await supabase.from('queue').insert({ id: userId });
+    try {
+      const supabase = getSupabase();
+      setView('matching');
+      await supabase.from('queue').insert({ id: userId });
+    } catch (e: any) {
+      if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+    }
   };
 
   const handleCancelMatching = async () => {
     if (userId) {
-      await supabase.from('queue').delete().eq('id', userId);
-      setView('home');
+      try {
+        const supabase = getSupabase();
+        await supabase.from('queue').delete().eq('id', userId);
+        setView('home');
+      } catch (e: any) {
+        if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+      }
     }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (userId && roomId && inputText.trim()) {
-      const text = inputText.trim();
-      setInputText('');
-      await supabase.from('messages').insert({
-        chat_id: roomId,
-        sender_id: userId,
-        text: text
-      });
+      try {
+        const supabase = getSupabase();
+        const text = inputText.trim();
+        setInputText('');
+        await supabase.from('messages').insert({
+          chat_id: roomId,
+          sender_id: userId,
+          text: text
+        });
+      } catch (err: any) {
+        if (err.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+      }
     }
   };
 
   const handleLeaveChat = async () => {
     if (roomId) {
-      await supabase.from('chats').update({ status: 'ended' }).eq('id', roomId);
-      setView('home');
-      setRoomId(null);
+      try {
+        const supabase = getSupabase();
+        await supabase.from('chats').update({ status: 'ended' }).eq('id', roomId);
+        setView('home');
+        setRoomId(null);
+      } catch (e: any) {
+        if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+      }
     }
   };
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
+
+  if (configError) {
+    return (
+      <div className="min-h-screen bg-bg flex items-center justify-center p-6 text-center">
+        <div className="max-w-md space-y-6 glass p-8 rounded-3xl border-red-500/20">
+          <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto">
+            <Lock className="text-red-500" size={32} />
+          </div>
+          <h2 className="text-2xl font-serif italic text-accent">Supabase কনফিগারেশন বাকি</h2>
+          <p className="text-muted text-sm leading-relaxed">
+            অ্যাপটি চালানোর জন্য আপনাকে Supabase URL এবং Anon Key সেট করতে হবে। অনুগ্রহ করে AI Studio-র <b>Secrets</b> প্যানেলে গিয়ে <b>VITE_SUPABASE_URL</b> এবং <b>VITE_SUPABASE_ANON_KEY</b> যোগ করুন।
+          </p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="w-full py-3 bg-white/5 hover:bg-white/10 rounded-xl text-xs uppercase tracking-widest transition-all"
+          >
+            আবার চেষ্টা করুন
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-bg text-accent font-sans selection:bg-primary selection:text-white overflow-hidden transition-colors duration-300">
