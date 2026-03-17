@@ -5,11 +5,21 @@ let supabaseInstance: SupabaseClient | null = null;
 export const getSupabase = (): SupabaseClient => {
   if (!supabaseInstance) {
     const env = (import.meta as any).env || {};
-    const supabaseUrl = env.VITE_SUPABASE_URL;
-    const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY;
+    
+    // Vite standard
+    let supabaseUrl = env.VITE_SUPABASE_URL;
+    let supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY;
+
+    // Fallback check (some environments might not require VITE_ prefix if configured)
+    if (!supabaseUrl) supabaseUrl = env.SUPABASE_URL;
+    if (!supabaseAnonKey) supabaseAnonKey = env.SUPABASE_ANON_KEY;
+
+    console.log('Supabase Config Check:', {
+      urlPresent: !!supabaseUrl,
+      keyPresent: !!supabaseAnonKey
+    });
 
     if (!supabaseUrl || !supabaseAnonKey) {
-      // অ্যাপ ক্র্যাশ হওয়া থেকে বাঁচাতে একটি এরর থ্রো করছি যা আমরা UI-তে হ্যান্ডেল করতে পারবো
       throw new Error('SUPABASE_CONFIG_MISSING');
     }
     

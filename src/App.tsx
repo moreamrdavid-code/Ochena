@@ -283,16 +283,28 @@ export default function App() {
           <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto">
             <Lock className="text-red-500" size={32} />
           </div>
-          <h2 className="text-2xl font-serif italic text-accent">Supabase কনফিগারেশন বাকি</h2>
-          <p className="text-muted text-sm leading-relaxed">
-            অ্যাপটি চালানোর জন্য আপনাকে Supabase URL এবং Anon Key সেট করতে হবে। অনুগ্রহ করে AI Studio-র <b>Secrets</b> প্যানেলে গিয়ে <b>VITE_SUPABASE_URL</b> এবং <b>VITE_SUPABASE_ANON_KEY</b> যোগ করুন।
-          </p>
-          <button 
-            onClick={() => window.location.reload()}
-            className="w-full py-3 bg-white/5 hover:bg-white/10 rounded-xl text-xs uppercase tracking-widest transition-all"
-          >
-            আবার চেষ্টা করুন
-          </button>
+          <h2 className="text-2xl font-serif italic text-accent">Supabase কনফিগারেশন পাওয়া যায়নি</h2>
+          <div className="text-muted text-sm space-y-4 leading-relaxed">
+            <p>
+              আপনি যদি ইতিমধ্যে Secrets যোগ করে থাকেন, তবে নিচের ধাপগুলো চেক করুন:
+            </p>
+            <ul className="text-left list-disc list-inside space-y-2 opacity-80">
+              <li>নামগুলো ঠিক আছে কি না (<b>VITE_SUPABASE_URL</b> এবং <b>VITE_SUPABASE_ANON_KEY</b>)</li>
+              <li>কোনো অতিরিক্ত স্পেস (Space) নেই তো?</li>
+              <li>Secrets যোগ করার পর <b>Restart Server</b> করেছেন কি না?</li>
+            </ul>
+          </div>
+          <div className="flex flex-col gap-3">
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-3 bg-primary text-white rounded-xl text-xs uppercase tracking-widest font-bold hover:opacity-90 transition-all"
+            >
+              পেজ রিফ্রেশ করুন
+            </button>
+            <p className="text-[10px] text-muted/50 uppercase tracking-tighter">
+              রিফ্রেশ করার পরেও না হলে ব্রাউজার কনসোল (F12) চেক করুন।
+            </p>
+          </div>
         </div>
       </div>
     );
