@@ -3,7 +3,7 @@ import { MessageCircle, Users, Send, LogOut, Hash, Sun, Moon, ChevronRight, User
 import { motion, AnimatePresence } from 'motion/react';
 import { getSupabase } from './supabase';
 
-type View = 'home' | 'matching' | 'chat' | 'admin_login';
+type View = 'home' | 'matching' | 'chat' | 'admin_login' | 'admin_panel';
 
 interface Message {
   id: string;
@@ -29,6 +29,10 @@ export default function App() {
   const [inputText, setInputText] = useState('');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [configError, setConfigError] = useState(false);
+  const [adminCode, setAdminCode] = useState('');
+  const [allChats, setAllChats] = useState<any[]>([]);
+  const [selectedAdminChat, setSelectedAdminChat] = useState<string | null>(null);
+  const [adminMessages, setAdminMessages] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Initialize Anonymous User
@@ -200,6 +204,20 @@ export default function App() {
         .on(
           'postgres_changes',
           {
+            event: 'DELETE',
+            schema: 'public',
+            table: 'chats',
+            filter: `id=eq.${roomId}`,
+          },
+          () => {
+            setView('home');
+            setRoomId(null);
+            setMessages([]);
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
             event: 'UPDATE',
             schema: 'public',
             table: 'chats',
@@ -209,6 +227,7 @@ export default function App() {
             if (payload.new.status === 'ended') {
               setView('home');
               setRoomId(null);
+              setMessages([]);
             }
           }
         )
@@ -231,6 +250,23 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // Cleanup on App Close
+  useEffect(() => {
+    const handleUnload = () => {
+      if (roomId) {
+        const supabase = getSupabase();
+        // Attempt to delete chat on close (best effort)
+        supabase.from('chats').delete().eq('id', roomId).then();
+      }
+      if (userId && view === 'matching') {
+        const supabase = getSupabase();
+        supabase.from('queue').delete().eq('id', userId).then();
+      }
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, [roomId, userId, view]);
 
   const handleStartMatching = async () => {
     if (!userId) return;
@@ -277,12 +313,59 @@ export default function App() {
     if (roomId) {
       try {
         const supabase = getSupabase();
+        // Instead of deleting, we mark as ended so admin can see history
         await supabase.from('chats').update({ status: 'ended' }).eq('id', roomId);
+        
         setView('home');
         setRoomId(null);
+        setMessages([]);
       } catch (e: any) {
         if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
       }
+    }
+  };
+
+  // Admin Data Fetching
+  useEffect(() => {
+    if (view !== 'admin_panel') return;
+
+    const supabase = getSupabase();
+    const fetchAdminData = async () => {
+      const { data: chats } = await supabase.from('chats').select('*').order('created_at', { ascending: false });
+      if (chats) setAllChats(chats);
+    };
+
+    fetchAdminData();
+    const interval = setInterval(fetchAdminData, 5000); // Refresh every 5s
+
+    return () => clearInterval(interval);
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== 'admin_panel' || !selectedAdminChat) return;
+
+    const supabase = getSupabase();
+    const fetchMessages = async () => {
+      const { data: msgs } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('chat_id', selectedAdminChat)
+        .order('created_at', { ascending: true });
+      if (msgs) setAdminMessages(msgs);
+    };
+
+    fetchMessages();
+    const interval = setInterval(fetchMessages, 3000);
+    return () => clearInterval(interval);
+  }, [view, selectedAdminChat]);
+
+  const handleAdminLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminCode === '676476') {
+      setView('admin_panel');
+      setAdminCode('');
+    } else {
+      alert('ভুল কোড!');
     }
   };
 
@@ -394,8 +477,111 @@ export default function App() {
                 </div>
               </motion.div>
 
-              <div className="absolute bottom-14 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-[0.2em] text-muted/50 font-medium whitespace-nowrap">
-                This app made by "The Daily ICD"
+              <div className="absolute bottom-14 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-[0.2em] text-muted/50 font-medium whitespace-nowrap flex flex-col items-center gap-2">
+                <span>This app made by "The Daily ICD"</span>
+                <button 
+                  onClick={() => setView('admin_login')}
+                  className="hover:text-primary transition-colors"
+                >
+                  Admin Login
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {view === 'admin_login' && (
+          <motion.div
+            key="admin_login"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="flex flex-col items-center justify-center min-h-screen p-6"
+          >
+            <div className="w-full max-w-md glass p-8 rounded-3xl space-y-6">
+              <div className="text-center space-y-2">
+                <Lock className="mx-auto text-primary" size={32} />
+                <h2 className="text-2xl font-serif italic">Admin Access</h2>
+              </div>
+              <form onSubmit={handleAdminLogin} className="space-y-4">
+                <input
+                  type="password"
+                  value={adminCode}
+                  onChange={(e) => setAdminCode(e.target.value)}
+                  placeholder="অ্যাডমিন কোড দিন"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-6 py-4 text-center text-xl tracking-[0.5em] focus:outline-none focus:border-primary"
+                  autoFocus
+                />
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setView('home')}
+                    className="flex-1 py-4 glass rounded-xl text-xs uppercase font-bold"
+                  >
+                    ফিরে যান
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-2 py-4 bg-primary text-white rounded-xl text-xs uppercase font-bold"
+                  >
+                    লগইন করুন
+                  </button>
+                </div>
+              </form>
+            </div>
+          </motion.div>
+        )}
+
+        {view === 'admin_panel' && (
+          <motion.div
+            key="admin_panel"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 flex flex-col bg-bg"
+          >
+            <header className="flex-none p-6 glass border-b border-white/5 flex justify-between items-center">
+              <h2 className="text-xl font-serif italic">Admin Dashboard</h2>
+              <button onClick={() => setView('home')} className="text-xs uppercase tracking-widest text-muted hover:text-accent">লগআউট</button>
+            </header>
+            <div className="flex-1 flex overflow-hidden">
+              {/* Chat List */}
+              <div className="w-1/3 border-r border-white/5 overflow-y-auto p-4 space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest text-muted mb-4 px-2">Chat History ({allChats.length})</h3>
+                {allChats.map(chat => (
+                  <button
+                    key={chat.id}
+                    onClick={() => setSelectedAdminChat(chat.id)}
+                    className={`w-full text-left p-4 rounded-xl transition-all ${selectedAdminChat === chat.id ? 'bg-primary/20 border border-primary/30' : 'glass hover:bg-white/5'}`}
+                  >
+                    <div className="flex justify-between items-start mb-1">
+                      <div className="text-xs font-mono truncate flex-1">{chat.id}</div>
+                      <span className={`text-[8px] px-1 rounded ${chat.status === 'active' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-red-500/20 text-red-500'}`}>
+                        {chat.status}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-muted">{new Date(chat.created_at).toLocaleString()}</div>
+                  </button>
+                ))}
+              </div>
+              {/* Message View */}
+              <div className="flex-1 flex flex-col overflow-hidden">
+                {selectedAdminChat ? (
+                  <>
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                      {adminMessages.map(msg => (
+                        <div key={msg.id} className={`flex flex-col ${msg.sender_id.startsWith('guest') ? 'items-start' : 'items-end'}`}>
+                          <span className="text-[8px] uppercase tracking-tighter text-muted mb-1">{msg.sender_id}</span>
+                          <div className="glass px-4 py-2 rounded-2xl text-sm max-w-[80%]">
+                            {msg.text}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-muted italic">একটি চ্যাট সিলেক্ট করুন</div>
+                )}
               </div>
             </div>
           </motion.div>
