@@ -11,6 +11,7 @@ interface Message {
   sender_id: string;
   text: string;
   created_at: string;
+  reactions?: Record<string, string[]>; // emoji -> list of userIds
 }
 
 interface ChatSession {
@@ -186,19 +187,34 @@ export default function App() {
           if (data) setMessages(data);
         });
 
-      // Listen for new messages
+      // Listen for new messages and broadcast events
       const msgChannel = supabase
         .channel(`room-${roomId}`)
         .on(
           'postgres_changes',
           {
-            event: 'INSERT',
+            event: '*', // Listen for all changes (INSERT, UPDATE)
             schema: 'public',
             table: 'messages',
             filter: `chat_id=eq.${roomId}`,
           },
           (payload) => {
-            setMessages((prev) => [...prev, payload.new as Message]);
+            if (payload.eventType === 'INSERT') {
+              setMessages((prev) => [...prev, payload.new as Message]);
+            } else if (payload.eventType === 'UPDATE') {
+              setMessages((prev) => 
+                prev.map((msg) => msg.id === payload.new.id ? { ...msg, ...payload.new } : msg)
+              );
+            }
+          }
+        )
+        .on(
+          'broadcast',
+          { event: 'CHAT_ENDED' },
+          () => {
+            setView('home');
+            setRoomId(null);
+            setMessages([]);
           }
         )
         .on(
@@ -301,7 +317,8 @@ export default function App() {
         await supabase.from('messages').insert({
           chat_id: roomId,
           sender_id: userId,
-          text: text
+          text: text,
+          reactions: {}
         });
       } catch (err: any) {
         if (err.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
@@ -309,11 +326,55 @@ export default function App() {
     }
   };
 
+  const handleReact = async (messageId: string, emoji: string) => {
+    if (!userId) return;
+    try {
+      const supabase = getSupabase();
+      const message = messages.find(m => m.id === messageId);
+      if (!message) return;
+
+      const currentReactions = message.reactions || {};
+      const userList = currentReactions[emoji] || [];
+      
+      let newUserList;
+      if (userList.includes(userId)) {
+        newUserList = userList.filter(id => id !== userId);
+      } else {
+        newUserList = [...userList, userId];
+      }
+
+      const updatedReactions = {
+        ...currentReactions,
+        [emoji]: newUserList
+      };
+
+      // Clean up empty reaction lists
+      if (newUserList.length === 0) {
+        delete updatedReactions[emoji];
+      }
+
+      await supabase
+        .from('messages')
+        .update({ reactions: updatedReactions })
+        .eq('id', messageId);
+    } catch (err: any) {
+      if (err.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
+    }
+  };
+
   const handleLeaveChat = async () => {
     if (roomId) {
       try {
         const supabase = getSupabase();
-        // Instead of deleting, we mark as ended so admin can see history
+        
+        // 1. Broadcast to opponent immediately
+        await supabase.channel(`room-${roomId}`).send({
+          type: 'broadcast',
+          event: 'CHAT_ENDED',
+          payload: {},
+        });
+
+        // 2. Update database status
         await supabase.from('chats').update({ status: 'ended' }).eq('id', roomId);
         
         setView('home');
@@ -655,16 +716,55 @@ export default function App() {
                   key={msg.id}
                   className={`flex ${msg.sender_id === userId ? 'justify-end' : 'justify-start'}`}
                 >
-                  <div className="max-w-[85%] md:max-w-[70%] space-y-1">
+                  <div className="max-w-[85%] md:max-w-[70%] space-y-1 group relative">
                     <div
-                      className={`px-4 py-3 md:px-5 md:py-4 rounded-2xl md:rounded-3xl text-sm leading-relaxed ${
+                      className={`px-4 py-3 md:px-5 md:py-4 rounded-2xl md:rounded-3xl text-sm leading-relaxed relative ${
                         msg.sender_id === userId
                           ? 'chat-bubble-user text-white rounded-tr-none shadow-lg'
                           : 'chat-bubble-partner text-accent rounded-tl-none'
                       }`}
                     >
                       {msg.text}
+                      
+                      {/* Reaction Picker Trigger */}
+                      <div className={`absolute top-0 ${msg.sender_id === userId ? '-left-8' : '-right-8'} opacity-0 group-hover:opacity-100 transition-opacity`}>
+                        <div className="flex gap-1 bg-bg/80 backdrop-blur-md p-1 rounded-full border border-white/10 shadow-xl">
+                          {['❤️', '😂', '😮', '👍'].map(emoji => (
+                            <button
+                              key={emoji}
+                              onClick={() => handleReact(msg.id, emoji)}
+                              className="hover:scale-125 transition-transform p-0.5 text-xs"
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
+
+                    {/* Display Reactions */}
+                    {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                      <div className={`flex flex-wrap gap-1 mt-1 ${msg.sender_id === userId ? 'justify-end' : 'justify-start'}`}>
+                        {Object.entries(msg.reactions).map(([emoji, users]) => {
+                          const userList = users as string[];
+                          return (
+                            <button
+                              key={emoji}
+                              onClick={() => handleReact(msg.id, emoji)}
+                              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border transition-all ${
+                                userList.includes(userId!) 
+                                  ? 'bg-primary/20 border-primary/50 text-primary' 
+                                  : 'glass border-white/5 text-muted'
+                              }`}
+                            >
+                              <span>{emoji}</span>
+                              <span>{userList.length}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     <p className={`text-[9px] font-mono opacity-30 ${msg.sender_id === userId ? 'text-right' : 'text-left'}`}>
                       {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
