@@ -321,7 +321,7 @@ export default function App() {
       {/* Theme Toggle */}
       <button
         onClick={toggleTheme}
-        className="fixed top-6 right-6 z-50 p-3 glass rounded-full hover:scale-110 transition-all active:scale-95"
+        className="fixed top-6 left-6 z-50 p-3 glass rounded-full hover:scale-110 transition-all active:scale-95"
       >
         {theme === 'dark' ? <Sun size={20} className="text-amber-400" /> : <Moon size={20} className="text-indigo-600" />}
       </button>
@@ -436,7 +436,7 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="font-serif italic text-lg leading-tight">অচেনা বন্ধু</h3>
-                  <p className="text-[10px] uppercase tracking-widest text-emerald-500 font-bold">সংযুক্ত</p>
+                  <p className="text-[10px] uppercase tracking-widest text-emerald-500 font-bold">Active</p>
                 </div>
               </div>
               <button
@@ -474,7 +474,7 @@ export default function App() {
               <div ref={messagesEndRef} />
             </div>
 
-            <form onSubmit={handleSendMessage} className="p-4 md:p-6 border-t border-white/5 bg-bg/50 backdrop-blur-xl">
+            <form onSubmit={handleSendMessage} className="p-4 md:p-6 border-t border-white/5 bg-bg/50 backdrop-blur-xl sticky bottom-0 z-20">
               <div className="flex items-center gap-3 max-w-4xl mx-auto">
                 <div className="relative flex-1">
                   <input
@@ -482,7 +482,7 @@ export default function App() {
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     placeholder="আপনার মেসেজ লিখুন..."
-                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
                   />
                   <button
                     type="submit"
