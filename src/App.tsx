@@ -80,7 +80,8 @@ export default function App() {
 
     try {
       const supabase = getSupabase();
-      // 1. Listen for chats I'm part of
+      
+      // 1. Listen for chats I'm part of (Simplified filter for better reliability)
       const chatChannel = supabase
         .channel('chat-matching')
         .on(
@@ -89,14 +90,12 @@ export default function App() {
             event: 'INSERT',
             schema: 'public',
             table: 'chats',
-            filter: `users=cs.{${userId}}`,
           },
           (payload) => {
             const newChat = payload.new as ChatSession;
-            if (newChat.status === 'active') {
+            if (newChat.status === 'active' && newChat.users.includes(userId)) {
               setRoomId(newChat.id);
               setView('chat');
-              // Remove from queue
               supabase.from('queue').delete().eq('id', userId).then();
             }
           }
@@ -105,10 +104,27 @@ export default function App() {
 
       // 2. Look for others in queue and try to pair
       const findMatch = async () => {
+        // First, check if I'm already matched by someone else
+        const { data: existingChat } = await supabase
+          .from('chats')
+          .select('id')
+          .contains('users', [userId])
+          .eq('status', 'active')
+          .limit(1);
+
+        if (existingChat && existingChat.length > 0) {
+          setRoomId(existingChat[0].id);
+          setView('chat');
+          await supabase.from('queue').delete().eq('id', userId);
+          return;
+        }
+
+        // Look for someone else in queue
         const { data: queueData } = await supabase
           .from('queue')
           .select('id')
           .neq('id', userId)
+          .order('created_at', { ascending: true })
           .limit(1);
 
         if (queueData && queueData.length > 0) {
@@ -116,18 +132,16 @@ export default function App() {
           const sortedIds = [userId, partnerId].sort();
           const newRoomId = `room_${sortedIds[0].substring(0, 8)}_${sortedIds[1].substring(0, 8)}`;
 
-          // Attempt to create room
           const { error } = await supabase.from('chats').insert({
             id: newRoomId,
             users: sortedIds,
             status: 'active'
           });
 
-          // If successful or if it already exists (someone else created it)
-          if (!error || error.code === '23505') { // 23505 is unique violation
+          if (!error || error.code === '23505') {
             setRoomId(newRoomId);
             setView('chat');
-            supabase.from('queue').delete().eq('id', userId).then();
+            await supabase.from('queue').delete().eq('id', userId);
           }
         }
       };
