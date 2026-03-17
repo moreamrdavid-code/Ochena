@@ -79,6 +79,8 @@ export default function App() {
     }
   }, [userId]);
 
+  const matchingInProgress = useRef(false);
+
   // Matching Logic
   useEffect(() => {
     if (!userId || view !== 'matching') return;
@@ -109,45 +111,56 @@ export default function App() {
 
       // 2. Look for others in queue and try to pair
       const findMatch = async () => {
-        // First, check if I'm already matched by someone else
-        const { data: existingChat } = await supabase
-          .from('chats')
-          .select('id')
-          .contains('users', [userId])
-          .eq('status', 'active')
-          .limit(1);
+        if (matchingInProgress.current || view !== 'matching' || !userId) return;
+        matchingInProgress.current = true;
 
-        if (existingChat && existingChat.length > 0) {
-          setRoomId(existingChat[0].id);
-          setView('chat');
-          await supabase.from('queue').delete().eq('id', userId);
-          return;
-        }
+        try {
+          // First, check if I'm already matched by someone else
+          const { data: existingChat } = await supabase
+            .from('chats')
+            .select('id')
+            .contains('users', [userId])
+            .eq('status', 'active')
+            .limit(1);
 
-        // Look for someone else in queue
-        const { data: queueData } = await supabase
-          .from('queue')
-          .select('id')
-          .neq('id', userId)
-          .order('created_at', { ascending: true })
-          .limit(1);
-
-        if (queueData && queueData.length > 0) {
-          const partnerId = queueData[0].id;
-          const sortedIds = [userId, partnerId].sort();
-          const newRoomId = `room_${sortedIds[0].substring(0, 8)}_${sortedIds[1].substring(0, 8)}`;
-
-          const { error } = await supabase.from('chats').insert({
-            id: newRoomId,
-            users: sortedIds,
-            status: 'active'
-          });
-
-          if (!error || error.code === '23505') {
-            setRoomId(newRoomId);
+          if (existingChat && existingChat.length > 0) {
+            setRoomId(existingChat[0].id);
             setView('chat');
             await supabase.from('queue').delete().eq('id', userId);
+            return;
           }
+
+          // Look for someone else in queue
+          const { data: queueData } = await supabase
+            .from('queue')
+            .select('id')
+            .neq('id', userId)
+            .order('created_at', { ascending: true })
+            .limit(3); // Get top 3 to reduce collision by picking one
+
+          if (queueData && queueData.length > 0) {
+            // Pick a random one from top candidates to avoid everyone hitting the same person
+            const partnerId = queueData[Math.floor(Math.random() * queueData.length)].id;
+            const sortedIds = [userId, partnerId].sort();
+            const newRoomId = `room_${sortedIds[0].substring(0, 12)}_${sortedIds[1].substring(0, 12)}`;
+
+            const { error } = await supabase.from('chats').insert({
+              id: newRoomId,
+              users: sortedIds,
+              status: 'active'
+            });
+
+            if (!error || error.code === '23505') {
+              setRoomId(newRoomId);
+              setView('chat');
+              // Try to remove both from queue
+              await supabase.from('queue').delete().in('id', [userId, partnerId]);
+            }
+          }
+        } catch (err) {
+          console.error("Match error:", err);
+        } finally {
+          matchingInProgress.current = false;
         }
       };
 
@@ -162,9 +175,13 @@ export default function App() {
         )
         .subscribe();
 
+      // Polling fallback every 4 seconds
+      const pollInterval = setInterval(findMatch, 4000);
+
       return () => {
         chatChannel.unsubscribe();
         queueChannel.unsubscribe();
+        clearInterval(pollInterval);
       };
     } catch (e: any) {
       if (e.message === 'SUPABASE_CONFIG_MISSING') setConfigError(true);
